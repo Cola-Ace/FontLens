@@ -25,6 +25,9 @@ func readProperties(loader *opentype.Loader) []Property {
 			add("head", "状态", "解析失败：表长度不足")
 		} else {
 			add("head", "版本", fmt.Sprintf("%d.%d", binary.BigEndian.Uint16(data[0:2]), binary.BigEndian.Uint16(data[2:4])))
+			add("head", "fontRevision", float32(int32(binary.BigEndian.Uint32(data[4:8])))/65536)
+			add("head", "checksumAdjustment", fmt.Sprintf("0x%08X", binary.BigEndian.Uint32(data[8:12])))
+			add("head", "flags", fmt.Sprintf("0x%04X", binary.BigEndian.Uint16(data[16:18])))
 			add("head", "每 em 设计单位", binary.BigEndian.Uint16(data[18:20]))
 			add("head", "创建时间（字体声明）", macTime(data[20:28]))
 			add("head", "修改时间（字体声明）", macTime(data[28:36]))
@@ -43,6 +46,10 @@ func readProperties(loader *opentype.Loader) []Property {
 			add("OS/2", "字宽等级", binary.BigEndian.Uint16(data[6:8]))
 			rights := binary.BigEndian.Uint16(data[8:10])
 			add("OS/2", "嵌入权限 fsType", fmt.Sprintf("0x%04X · %s", rights, embeddingRights(rights)))
+			add("OS/2", "下标 xSize / ySize / xOffset / yOffset", fmt.Sprintf("%d / %d / %d / %d", int16(binary.BigEndian.Uint16(data[10:12])), int16(binary.BigEndian.Uint16(data[12:14])), int16(binary.BigEndian.Uint16(data[14:16])), int16(binary.BigEndian.Uint16(data[16:18]))))
+			add("OS/2", "上标 xSize / ySize / xOffset / yOffset", fmt.Sprintf("%d / %d / %d / %d", int16(binary.BigEndian.Uint16(data[18:20])), int16(binary.BigEndian.Uint16(data[20:22])), int16(binary.BigEndian.Uint16(data[22:24])), int16(binary.BigEndian.Uint16(data[24:26]))))
+			add("OS/2", "删除线粗细 / 位置", fmt.Sprintf("%d / %d", int16(binary.BigEndian.Uint16(data[26:28])), int16(binary.BigEndian.Uint16(data[28:30]))))
+			add("OS/2", "IBM family class", fmt.Sprintf("0x%04X", binary.BigEndian.Uint16(data[30:32])))
 			add("OS/2", "PANOSE", fmt.Sprintf("% X", data[32:42]))
 			add("OS/2", "声明 Unicode 范围", fmt.Sprintf("% X", data[42:58]))
 			add("OS/2", "厂商 ID", string(data[58:62]))
@@ -66,7 +73,10 @@ func readProperties(loader *opentype.Loader) []Property {
 			} else {
 				add(tag, "ascender / descender / line gap", fmt.Sprintf("%d / %d / %d", int16(binary.BigEndian.Uint16(data[4:6])), int16(binary.BigEndian.Uint16(data[6:8])), int16(binary.BigEndian.Uint16(data[8:10]))))
 				add(tag, "最大 advance", binary.BigEndian.Uint16(data[10:12]))
+				add(tag, "最小前侧 / 后侧 bearing", fmt.Sprintf("%d / %d", int16(binary.BigEndian.Uint16(data[12:14])), int16(binary.BigEndian.Uint16(data[14:16]))))
+				add(tag, "最大 extent", int16(binary.BigEndian.Uint16(data[16:18])))
 				add(tag, "caret slope rise / run", fmt.Sprintf("%d / %d", int16(binary.BigEndian.Uint16(data[18:20])), int16(binary.BigEndian.Uint16(data[20:22]))))
+				add(tag, "长度量记录数", binary.BigEndian.Uint16(data[34:36]))
 			}
 		}
 	}
@@ -75,6 +85,7 @@ func readProperties(loader *opentype.Loader) []Property {
 			add("post", "状态", "解析失败：表长度不足")
 		} else {
 			add("post", "斜体角度", float32(int32(binary.BigEndian.Uint32(data[4:8])))/65536)
+			add("post", "版本", fmt.Sprintf("0x%08X", binary.BigEndian.Uint32(data[0:4])))
 			add("post", "下划线位置 / 厚度", fmt.Sprintf("%d / %d", int16(binary.BigEndian.Uint16(data[8:10])), int16(binary.BigEndian.Uint16(data[10:12]))))
 			add("post", "等宽标志", binary.BigEndian.Uint32(data[12:16]) != 0)
 		}
