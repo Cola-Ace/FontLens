@@ -41,6 +41,11 @@ type settings struct {
 	Charsets        []coverage.Definition `json:"charsets"`
 	CharsetRevision int64                 `json:"charsetRevision"`
 	ThemeMode       int                   `json:"themeMode"`
+	LeftWidth       float32               `json:"leftWidth,omitempty"`
+	CenterWidth     float32               `json:"centerWidth,omitempty"`
+	CoverageSplit   float32               `json:"coverageSplit,omitempty"`
+	LicenseSplit    float32               `json:"licenseSplit,omitempty"`
+	TableWidths     map[string]float32    `json:"tableWidths,omitempty"`
 }
 
 type appState struct {
@@ -524,6 +529,26 @@ func (a *appState) loadSettings() {
 		if saved.ThemeMode >= 0 && saved.ThemeMode <= 2 {
 			a.themeMode = saved.ThemeMode
 		}
+		if saved.LeftWidth > 0 {
+			a.leftWidth = saved.LeftWidth
+		}
+		if saved.CenterWidth > 0 {
+			a.centerWidth = saved.CenterWidth
+		}
+		if saved.CoverageSplit > 0 && saved.CoverageSplit < 100 {
+			a.coverageSplit = saved.CoverageSplit
+		}
+		if saved.LicenseSplit > 0 && saved.LicenseSplit < 100 {
+			a.licenseSplit = saved.LicenseSplit
+		}
+		for id, width := range saved.TableWidths {
+			if width > 0 {
+				if a.table.Columns.Widths == nil {
+					a.table.Columns.Widths = make(map[string]float32)
+				}
+				a.table.Columns.Widths[id] = width
+			}
+		}
 	}
 }
 
@@ -540,7 +565,13 @@ func (a *appState) saveSettings() {
 		open = append(open, node)
 	}
 	slices.Sort(open)
-	data, err := json.MarshalIndent(settings{Sources: a.sources, Scope: a.scope, Open: open, Charsets: a.charsets, CharsetRevision: a.charsetRevision, ThemeMode: a.themeMode}, "", "  ")
+	data, err := json.MarshalIndent(settings{
+		Sources: a.sources, Scope: a.scope, Open: open, Charsets: a.charsets,
+		CharsetRevision: a.charsetRevision, ThemeMode: a.themeMode,
+		LeftWidth: a.leftWidth, CenterWidth: a.centerWidth,
+		CoverageSplit: a.coverageSplit, LicenseSplit: a.licenseSplit,
+		TableWidths: a.table.Columns.Widths,
+	}, "", "  ")
 	if err == nil {
 		_ = os.WriteFile(path, data, 0600)
 	}
@@ -845,13 +876,18 @@ func (a *appState) view(c *ui.Context) {
 		return
 	}
 	width, _ := c.Size()
+	leftWidth, centerWidth := a.leftWidth, a.centerWidth
 	if width >= 1024 {
-		a.leftWidth = min(a.leftWidth, width-800)
-		a.centerWidth = min(a.centerWidth, width-a.leftWidth-320)
+		leftWidth = min(leftWidth, width-800)
+		centerWidth = min(centerWidth, width-leftWidth-320)
 	}
-	ui.Split(c, &a.leftWidth, func() { a.sidebar(c) }, func() {
-		ui.Split(c, &a.centerWidth, func() { a.browser(c) }, func() { a.details(c) }).Fill()
-	}).Fill()
+	if ui.Split(c, &leftWidth, func() { a.sidebar(c) }, func() {
+		if ui.Split(c, &centerWidth, func() { a.browser(c, centerWidth) }, func() { a.details(c) }).Fill().Changed() {
+			a.centerWidth = centerWidth
+		}
+	}).Fill().Changed() {
+		a.leftWidth = leftWidth
+	}
 }
 
 func (a *appState) openRawTable(face fonts.Entry, tag string) {
@@ -1451,7 +1487,7 @@ func (a *appState) addFolder(input string) {
 	a.refresh()
 }
 
-func (a *appState) browser(c *ui.Context) {
+func (a *appState) browser(c *ui.Context, width float32) {
 	if a.tableSort != a.sortSeen {
 		a.sortMode = (a.sortMode + 1) % 3
 		switch a.sortMode {
@@ -1497,7 +1533,7 @@ func (a *appState) browser(c *ui.Context) {
 		if a.sortMode == 0 {
 			sortTitle += " · 原始顺序"
 		}
-		nameWidth := max(120, (a.centerWidth-32-52-220)*2/3)
+		nameWidth := max(120, (width-32-52-220)*2/3)
 		columns := []ui.TableColumn{{Title: "对比", Width: 52}, {Title: sortTitle, ID: "name", Width: nameWidth, Sortable: true}, {Title: "预览（Family Name）", ID: "preview"}}
 		listTheme := *c.Theme()
 		listTheme.Spacing = 3
