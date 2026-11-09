@@ -113,10 +113,14 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "--self-check" {
 		fontPath := ""
+		sample := "FontLens 123"
 		if len(os.Args) > 2 {
 			fontPath = os.Args[2]
 		}
-		if err := selfCheck(fontPath); err != nil {
+		if len(os.Args) > 3 {
+			sample = os.Args[3]
+		}
+		if err := selfCheck(fontPath, sample); err != nil {
 			log.Fatal(err)
 		}
 		fmt.Println("FontLens self-check passed")
@@ -166,7 +170,7 @@ func (a *appState) readFaces(path string) ([]fonts.Face, error) {
 	return faces, err
 }
 
-func selfCheck(fontPath string) error {
+func selfCheck(fontPath, sample string) error {
 	if err := checkScopeCounts(); err != nil {
 		return err
 	}
@@ -198,7 +202,7 @@ func selfCheck(fontPath string) error {
 		return fmt.Errorf("Unicode block denominator mismatch")
 	}
 	if fontPath != "" {
-		return checkFont(fontPath)
+		return checkFont(fontPath, sample)
 	}
 	systemFaces := 0
 	if err := fonts.SystemFaces(context.Background(), func(string, int) { systemFaces++ }, func(error) {}); err != nil {
@@ -220,7 +224,7 @@ func selfCheck(fontPath string) error {
 			path := filepath.Join(root, entry.Name())
 			faces, err := fonts.Read(path)
 			if err == nil && len(faces) > 0 && faces[0].FullName != "" {
-				return checkFont(path)
+				return checkFont(path, sample)
 			}
 		}
 	}
@@ -266,7 +270,7 @@ func checkNameSorting() error {
 	return nil
 }
 
-func checkFont(path string) error {
+func checkFont(path, sample string) error {
 	faces, err := fonts.Read(path)
 	if err != nil {
 		return err
@@ -318,7 +322,7 @@ func checkFont(path string) error {
 		}
 		break
 	}
-	bitmap, err := preview.Render(context.Background(), path, 0, nil, "FontLens 123", 28, 260, 52, color.RGBA{R: 35, G: 39, B: 46, A: 255})
+	bitmap, err := preview.Render(context.Background(), path, 0, nil, sample, 28, 260, 52, color.RGBA{R: 35, G: 39, B: 46, A: 255})
 	if err != nil {
 		return fmt.Errorf("DirectWrite preview: %w", err)
 	}
@@ -326,7 +330,7 @@ func checkFont(path string) error {
 		if axis.Minimum == axis.Maximum {
 			continue
 		}
-		other, renderErr := preview.Render(context.Background(), path, 0, map[string]float32{axis.Tag: axis.Maximum}, "FontLens 123", 28, 260, 52, color.RGBA{R: 35, G: 39, B: 46, A: 255})
+		other, renderErr := preview.Render(context.Background(), path, 0, map[string]float32{axis.Tag: axis.Maximum}, sample, 28, 260, 52, color.RGBA{R: 35, G: 39, B: 46, A: 255})
 		if renderErr != nil {
 			return fmt.Errorf("variable preview: %w", renderErr)
 		}
