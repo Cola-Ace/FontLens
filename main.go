@@ -60,6 +60,7 @@ type appState struct {
 	sortMode         int
 	faces            []fonts.Face
 	faceIndex        map[string]int
+	systemIDs        map[string]bool
 	scopeCounts      map[string]int
 	rows             []fonts.Face
 	dirs             map[string][]string
@@ -199,6 +200,13 @@ func selfCheck(fontPath string) error {
 	if fontPath != "" {
 		return checkFont(fontPath)
 	}
+	systemFaces := 0
+	if err := fonts.SystemFaces(context.Background(), func(string, int) { systemFaces++ }, func(error) {}); err != nil {
+		return fmt.Errorf("DirectWrite system enumeration: %w", err)
+	}
+	if systemFaces == 0 {
+		return fmt.Errorf("DirectWrite returned no local system fonts")
+	}
 	for _, root := range systemSources() {
 		entries, err := os.ReadDir(root)
 		if err != nil {
@@ -232,8 +240,9 @@ func checkScopeCounts() error {
 			{Path: filepath.Join(os.TempDir(), "outside.ttf")},
 		},
 	}
+	app.systemIDs = map[string]bool{app.faces[0].ID(): true, app.faces[1].ID(): true}
 	app.recount()
-	if app.count("all") != 4 || app.count("custom") != 3 || app.count(root) != 3 || app.count(child) != 2 {
+	if app.count("all") != 4 || app.count("system") != 2 || app.count("custom") != 3 || app.count(root) != 3 || app.count(child) != 2 {
 		return fmt.Errorf("directory face counts mismatch")
 	}
 	return nil
@@ -443,22 +452,34 @@ func (a *appState) refresh() {
 	}
 	a.dirs = make(map[string][]string)
 	a.errors = nil
+	a.systemIDs = make(map[string]bool)
 	a.recount()
-	roots := append(systemSources(), a.sources...)
+	roots := slices.Clone(a.sources)
 	go func() {
 		seen := make(map[string]struct{})
-		batch := make([]fonts.Face, 0, 32)
+		type scanFace struct {
+			face   fonts.Face
+			system bool
+		}
+		batch := make([]scanFace, 0, 32)
 		flush := func() {
 			if len(batch) == 0 {
 				return
 			}
-			ready := append([]fonts.Face(nil), batch...)
+			ready := append([]scanFace(nil), batch...)
 			batch = batch[:0]
 			a.window.Update(func() {
 				if current != a.scanID {
 					return
 				}
-				for _, face := range ready {
+				for _, item := range ready {
+					face := item.face
+					if item.system && !a.systemIDs[face.ID()] {
+						a.systemIDs[face.ID()] = true
+						if _, exists := a.faceIndex[face.ID()]; exists {
+							a.scopeCounts["system"]++
+						}
+					}
 					if index, exists := a.faceIndex[face.ID()]; exists {
 						a.faces[index] = face
 					} else {
@@ -470,6 +491,54 @@ func (a *appState) refresh() {
 				a.rebuild()
 			})
 		}
+		enqueue := func(face fonts.Face, system bool) {
+			id := face.ID()
+			if _, exists := seen[id]; exists {
+				return
+			}
+			seen[id] = struct{}{}
+			batch = append(batch, scanFace{face: face, system: system})
+			if len(batch) == cap(batch) {
+				flush()
+			}
+		}
+		report := func(message string) {
+			a.window.Update(func() {
+				if current == a.scanID {
+					a.errors = append(a.errors, message)
+				}
+			})
+		}
+		wanted := make(map[string]map[int]bool)
+		if err := fonts.SystemFaces(ctx, func(path string, index int) {
+			if wanted[path] == nil {
+				wanted[path] = make(map[int]bool)
+			}
+			wanted[path][index] = true
+		}, func(err error) { report(err.Error()) }); err != nil && ctx.Err() == nil {
+			report("DirectWrite 系统字体枚举: " + err.Error())
+		}
+		paths := make([]string, 0, len(wanted))
+		for path := range wanted {
+			paths = append(paths, path)
+		}
+		slices.SortFunc(paths, func(left, right string) int { return strings.Compare(strings.ToLower(left), strings.ToLower(right)) })
+		for _, path := range paths {
+			if ctx.Err() != nil {
+				break
+			}
+			faces, err := a.readFaces(path)
+			if err != nil {
+				report(fmt.Sprintf("%s: %v", path, err))
+				continue
+			}
+			for _, face := range faces {
+				if wanted[path][face.Index] {
+					enqueue(face, true)
+				}
+			}
+		}
+		flush()
 		for _, root := range roots {
 			if ctx.Err() != nil {
 				break
@@ -491,21 +560,9 @@ func (a *appState) refresh() {
 					}
 				})
 			}, func(face fonts.Face) {
-				id := face.ID()
-				if _, exists := seen[id]; exists {
-					return
-				}
-				seen[id] = struct{}{}
-				batch = append(batch, face)
-				if len(batch) == cap(batch) {
-					flush()
-				}
+				enqueue(face, false)
 			}, func(path string, err error) {
-				a.window.Update(func() {
-					if current == a.scanID {
-						a.errors = append(a.errors, fmt.Sprintf("%s: %v", path, err))
-					}
-				})
+				report(fmt.Sprintf("%s: %v", path, err))
 			})
 			flush()
 		}
@@ -535,12 +592,7 @@ func (a *appState) inScope(face fonts.Face) bool {
 	case "all":
 		return true
 	case "system":
-		for _, root := range systemSources() {
-			if within(root, face.Path) {
-				return true
-			}
-		}
-		return false
+		return a.systemIDs[face.ID()]
 	case "custom":
 		for _, root := range a.sources {
 			if within(root, face.Path) {
@@ -606,11 +658,8 @@ func (a *appState) recount() {
 
 func (a *appState) addCount(face fonts.Face) {
 	a.scopeCounts["all"]++
-	for _, root := range systemSources() {
-		if within(root, face.Path) {
-			a.scopeCounts["system"]++
-			break
-		}
+	if a.systemIDs[face.ID()] {
+		a.scopeCounts["system"]++
 	}
 	for _, root := range a.sources {
 		if within(root, face.Path) {
