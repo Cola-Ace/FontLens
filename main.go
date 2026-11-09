@@ -58,6 +58,7 @@ type appState struct {
 	sortMode         int
 	faces            []fonts.Face
 	faceIndex        map[string]int
+	scopeCounts      map[string]int
 	rows             []fonts.Face
 	dirs             map[string][]string
 	errors           []string
@@ -159,6 +160,9 @@ func (a *appState) readFaces(path string) ([]fonts.Face, error) {
 }
 
 func selfCheck(fontPath string) error {
+	if err := checkScopeCounts(); err != nil {
+		return err
+	}
 	imported, err := coverage.Parse("sample.txt", []byte("---\nname: 示例\ncount: 2\n---\n字\n字\n镜\n"))
 	if err != nil || imported.Name != "示例" || len([]rune(imported.Members)) != 2 {
 		return fmt.Errorf("charset import check failed: %v", err)
@@ -204,6 +208,26 @@ func selfCheck(fontPath string) error {
 		}
 	}
 	return fmt.Errorf("no readable system font")
+}
+
+func checkScopeCounts() error {
+	root := filepath.Join(os.TempDir(), "fontlens-scope-check")
+	child := filepath.Join(root, "nested")
+	collection := filepath.Join(child, "faces.ttc")
+	app := appState{
+		sources: []string{root, child},
+		faces: []fonts.Face{
+			{Path: collection, Index: 0},
+			{Path: collection, Index: 1},
+			{Path: filepath.Join(root, "single.ttf")},
+			{Path: filepath.Join(os.TempDir(), "outside.ttf")},
+		},
+	}
+	app.recount()
+	if app.count("all") != 4 || app.count("custom") != 3 || app.count(root) != 3 || app.count(child) != 2 {
+		return fmt.Errorf("directory face counts mismatch")
+	}
+	return nil
 }
 
 func checkFont(path string) error {
@@ -366,6 +390,7 @@ func (a *appState) refresh() {
 	}
 	a.dirs = make(map[string][]string)
 	a.errors = nil
+	a.recount()
 	roots := append(systemSources(), a.sources...)
 	go func() {
 		seen := make(map[string]struct{})
@@ -386,6 +411,7 @@ func (a *appState) refresh() {
 					} else {
 						a.faceIndex[face.ID()] = len(a.faces)
 						a.faces = append(a.faces, face)
+						a.addCount(face)
 					}
 				}
 				a.rebuild()
@@ -441,6 +467,7 @@ func (a *appState) refresh() {
 					for index, face := range a.faces {
 						a.faceIndex[face.ID()] = index
 					}
+					a.recount()
 				}
 				a.scanning = false
 				a.cancelScan = nil
@@ -516,17 +543,37 @@ func (a *appState) rebuild() {
 	}
 }
 
-func (a *appState) count(scope string) int {
-	n := 0
+func (a *appState) recount() {
+	a.scopeCounts = make(map[string]int)
 	for _, face := range a.faces {
-		saved := a.scope
-		a.scope = scope
-		if a.inScope(face) {
-			n++
-		}
-		a.scope = saved
+		a.addCount(face)
 	}
-	return n
+}
+
+func (a *appState) addCount(face fonts.Face) {
+	a.scopeCounts["all"]++
+	for _, root := range systemSources() {
+		if within(root, face.Path) {
+			a.scopeCounts["system"]++
+			break
+		}
+	}
+	for _, root := range a.sources {
+		if within(root, face.Path) {
+			a.scopeCounts["custom"]++
+			break
+		}
+	}
+	for directory := filepath.Dir(face.Path); ; directory = filepath.Dir(directory) {
+		a.scopeCounts[directory]++
+		if parent := filepath.Dir(directory); parent == directory {
+			break
+		}
+	}
+}
+
+func (a *appState) count(scope string) int {
+	return a.scopeCounts[scope]
 }
 
 func (a *appState) view(c *ui.Context) {
