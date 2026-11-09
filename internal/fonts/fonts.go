@@ -19,11 +19,13 @@ import (
 )
 
 type NameRecord struct {
-	ID       uint16
-	Platform uint16
-	Encoding uint16
-	Language uint16
-	Value    string
+	ID          uint16
+	Platform    uint16
+	Encoding    uint16
+	Language    uint16
+	LanguageTag string
+	Value       string
+	Decoded     bool
 }
 
 type Table struct {
@@ -261,8 +263,29 @@ func readNames(data []byte) []NameRecord {
 	if len(data) < 6 {
 		return nil
 	}
+	format := binary.BigEndian.Uint16(data[:2])
 	count := int(binary.BigEndian.Uint16(data[2:4]))
 	base := int(binary.BigEndian.Uint16(data[4:6]))
+	var languageTags []string
+	if format == 1 && 6+count*12+2 <= len(data) {
+		start := 6 + count*12
+		tagCount := int(binary.BigEndian.Uint16(data[start:]))
+		start += 2
+		for i := 0; i < tagCount && start+4 <= len(data); i++ {
+			length := int(binary.BigEndian.Uint16(data[start:]))
+			offset := base + int(binary.BigEndian.Uint16(data[start+2:]))
+			start += 4
+			if length%2 != 0 || offset > len(data) || length > len(data)-offset {
+				languageTags = append(languageTags, "")
+				continue
+			}
+			units := make([]uint16, length/2)
+			for j := range units {
+				units[j] = binary.BigEndian.Uint16(data[offset+j*2:])
+			}
+			languageTags = append(languageTags, string(utf16.Decode(units)))
+		}
+	}
 	result := make([]NameRecord, 0, count)
 	for i := 0; i < count && 6+(i+1)*12 <= len(data); i++ {
 		record := data[6+i*12:]
@@ -277,24 +300,30 @@ func readNames(data []byte) []NameRecord {
 			Language: binary.BigEndian.Uint16(record[4:6]),
 			ID:       binary.BigEndian.Uint16(record[6:8]),
 		}
+		if name.Language >= 0x8000 && int(name.Language-0x8000) < len(languageTags) {
+			name.LanguageTag = languageTags[name.Language-0x8000]
+		}
 		raw := data[start : start+length]
 		if name.Platform == 0 || name.Platform == 3 {
-			if len(raw)%2 != 0 {
-				continue
+			if len(raw)%2 == 0 {
+				units := make([]uint16, len(raw)/2)
+				for j := range units {
+					units[j] = binary.BigEndian.Uint16(raw[j*2:])
+				}
+				name.Value = string(utf16.Decode(units))
+				name.Decoded = true
 			}
-			units := make([]uint16, len(raw)/2)
-			for j := range units {
-				units[j] = binary.BigEndian.Uint16(raw[j*2:])
-			}
-			name.Value = string(utf16.Decode(units))
 		} else if name.Platform == 1 && name.Encoding == 0 {
 			name.Value = tables.DecodeMacintosh(raw)
+			name.Decoded = true
 		} else if utf8.Valid(raw) {
 			name.Value = string(raw)
+			name.Decoded = true
 		}
-		if name.Value != "" {
-			result = append(result, name)
+		if !name.Decoded {
+			name.Value = fmt.Sprintf("解析失败 · 原始字节 % X", raw)
 		}
+		result = append(result, name)
 	}
 	return result
 }
@@ -302,7 +331,7 @@ func readNames(data []byte) []NameRecord {
 func preferredName(records []NameRecord, id uint16) string {
 	best, score := "", -1
 	for _, record := range records {
-		if record.ID != id {
+		if record.ID != id || !record.Decoded || record.Value == "" {
 			continue
 		}
 		n := 0

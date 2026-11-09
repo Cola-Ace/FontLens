@@ -1519,7 +1519,15 @@ func (a *appState) details(c *ui.Context) {
 			}
 			ui.Text(c, "名称记录").Bold()
 			for _, name := range face.Names {
-				line := fmt.Sprintf("ID %d · %d/%d/%04X: %s", name.ID, name.Platform, name.Encoding, name.Language, name.Value)
+				language := fmt.Sprintf("%04X", name.Language)
+				if name.LanguageTag != "" {
+					language += " " + name.LanguageTag
+				}
+				value := name.Value
+				if value == "" {
+					value = "（空字符串）"
+				}
+				line := fmt.Sprintf("ID %d · %d/%d/%s: %s", name.ID, name.Platform, name.Encoding, language, value)
 				if a.detailsMatch(line) {
 					ui.Text(c, line)
 				}
