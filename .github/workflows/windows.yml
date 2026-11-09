@@ -76,10 +76,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check executable behavior and startup
         shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
         run: |
           $exe = (Resolve-Path 'dist/windows-amd64/FontLens.exe').Path
           $selfCheck = Start-Process -FilePath $exe -ArgumentList '--self-check' -Wait -PassThru -WindowStyle Hidden
           if ($selfCheck.ExitCode -ne 0) { throw "EXE self-check failed with code $($selfCheck.ExitCode)" }
+          $versionOutput = Join-Path $env:RUNNER_TEMP 'fontlens-version.txt'
+          $versionCheck = Start-Process -FilePath $exe -ArgumentList '--version' -RedirectStandardOutput $versionOutput -Wait -PassThru -WindowStyle Hidden
+          if ($versionCheck.ExitCode -ne 0 -or (Get-Content $versionOutput -Raw).Trim() -ne $env:APP_VERSION) {
+            throw "EXE version differs from mygo.json: $env:APP_VERSION"
+          }
           $app = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
           try {
             Start-Sleep -Seconds 4
@@ -137,8 +144,11 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { throw 'Draft release creation or upload failed' }
           $verified = gh release view $tag --json isDraft,assets,tagName | ConvertFrom-Json
-          if (!$verified.isDraft -or $verified.tagName -ne $tag -or !($verified.assets | Where-Object name -eq $asset)) {
+          $verifiedAsset = $verified.assets | Where-Object name -eq $asset
+          if (!$verified.isDraft -or $verified.tagName -ne $tag -or !$verifiedAsset -or $verifiedAsset.size -ne (Get-Item -LiteralPath $path).Length) {
             throw 'Draft release verification failed'
           }
           gh release edit $tag --draft=false
           if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
+          $published = gh release view $tag --json isDraft | ConvertFrom-Json
+          if ($published.isDraft) { throw 'Release is still a draft' }

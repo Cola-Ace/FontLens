@@ -106,6 +106,10 @@ type appState struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Println(mygo.App.Version())
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "--self-check" {
 		fontPath := ""
 		if len(os.Args) > 2 {
