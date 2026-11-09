@@ -138,7 +138,7 @@ func main() {
 		fmt.Println("FontLens self-check passed")
 		return
 	}
-	app := &appState{leftWidth: 208, centerWidth: 800, coverageSplit: 50, licenseSplit: 25, licenseName: "LICENSE", scope: "all", selectedRow: -1, previewText: "FontLens 123", previewPreset: "自定义", previewSize: 26, previewLineHeight: 1.4}
+	app := &appState{leftWidth: 208, centerWidth: 800, coverageSplit: 50, licenseSplit: 25, licenseName: "LICENSE", scope: "all", selectedRow: -1, previewText: "FontLens 123", previewPreset: "自定义", previewSize: 30, previewLineHeight: 1.5}
 	app.sortMode = 1
 	app.tableSort = ui.SortOrder{Column: "name"}
 	app.sortSeen = app.tableSort
@@ -976,7 +976,7 @@ func (a *appState) previewView(c *ui.Context, face fonts.Entry, size float32, wi
 	a.previewTextView(c, face, a.previewText, size, width, height)
 }
 
-func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) {
+func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) ui.Element {
 	textColor := c.Theme().Text
 	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
 	key := a.ensurePreview(face, sample, size, width, height, scale, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
@@ -986,16 +986,16 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 			a.previewLast = make(map[string]*ui.Bitmap)
 		}
 		a.previewLast[slot] = bitmap
-		ui.Image(c, bitmap).Size(float32(width), float32(height)).Fit(ui.Contain)
+		return ui.Image(c, bitmap).Size(float32(width), float32(height)).Fit(ui.Contain)
 	} else if message := a.previewErrors[key]; message != "" {
-		ui.Text(c, message).TextColor(c.Theme().TextMuted).SingleLine()
+		return ui.Text(c, message).TextColor(c.Theme().TextMuted).SingleLine()
 	} else if bitmap := a.previewLast[slot]; bitmap != nil {
-		ui.Box(c).Size(float32(width), float32(height)).Children(func() {
+		return ui.Box(c).Size(float32(width), float32(height)).Children(func() {
 			ui.Image(c, bitmap).Size(float32(width), float32(height)).Fit(ui.Contain)
 			ui.Text(c, "更新中…").Absolute().Right(4).Bottom(2).FontSize(12).TextColor(c.Theme().TextMuted)
 		})
 	} else {
-		ui.Text(c, "预览生成中…").TextColor(c.Theme().TextMuted)
+		return ui.Text(c, "预览生成中…").TextColor(c.Theme().TextMuted)
 	}
 }
 
@@ -1411,33 +1411,37 @@ func (a *appState) browser(c *ui.Context) {
 			previewWidth = width
 		}
 		columns := []ui.TableColumn{{Title: "对比", Width: 52}, {Title: sortTitle, ID: "name", Width: nameWidth, Sortable: true}, {Title: "预览（Family Name）", ID: "preview"}}
-		if ui.Table(c, &a.table, columns, len(a.rows), func(row, column int) {
-			face := a.rows[row]
-			if column == 0 {
-				checked := slices.Contains(a.compareIDs, face.ID())
-				if ui.Checkbox(c, &checked, "").Changed() {
-					if checked && len(a.compareIDs) < 4 {
-						a.compareIDs = append(a.compareIDs, face.ID())
-						a.compareLimit = false
-					} else if checked {
-						a.compareLimit = true
-					} else {
-						a.compareIDs = slices.DeleteFunc(a.compareIDs, func(id string) bool { return id == face.ID() })
-						a.compareLimit = false
+		listTheme := *c.Theme()
+		listTheme.Spacing = 3
+		ui.Themed(c, &listTheme).Grow(1).Children(func() {
+			if ui.Table(c, &a.table, columns, len(a.rows), func(row, column int) {
+				face := a.rows[row]
+				if column == 0 {
+					checked := slices.Contains(a.compareIDs, face.ID())
+					if ui.Checkbox(c, &checked, "").Changed() {
+						if checked && len(a.compareIDs) < 4 {
+							a.compareIDs = append(a.compareIDs, face.ID())
+							a.compareLimit = false
+						} else if checked {
+							a.compareLimit = true
+						} else {
+							a.compareIDs = slices.DeleteFunc(a.compareIDs, func(id string) bool { return id == face.ID() })
+							a.compareLimit = false
+						}
 					}
+				} else if column == 1 {
+					ui.Text(c, face.FullName).SingleLine().Padding(8, 4)
+				} else if face.Family == "" {
+					ui.Text(c, "Family Name 未提供").TextColor(c.Theme().TextMuted).SingleLine()
+				} else {
+					a.previewTextView(c, face, face.Family, a.previewSize, max(1, int(previewWidth)-15), max(44, int(math.Ceil(float64(a.previewSize*1.4))))).Translate(0, -a.previewSize*0.2)
 				}
-			} else if column == 1 {
-				ui.Text(c, face.FullName).SingleLine().Padding(8, 4)
-			} else if face.Family == "" {
-				ui.Text(c, "Family Name 未提供").TextColor(c.Theme().TextMuted).SingleLine()
-			} else {
-				a.previewTextView(c, face, face.Family, a.previewSize, max(1, int(previewWidth)-12), 44)
+			}).Grow(1).Changed() {
+				if a.selectedRow >= 0 && a.selectedRow < len(a.rows) {
+					a.selectedID = a.rows[a.selectedRow].ID()
+				}
 			}
-		}).Grow(1).Changed() {
-			if a.selectedRow >= 0 && a.selectedRow < len(a.rows) {
-				a.selectedID = a.rows[a.selectedRow].ID()
-			}
-		}
+		})
 	})
 }
 
