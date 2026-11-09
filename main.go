@@ -241,6 +241,32 @@ func checkFont(path string) error {
 	if len(faces[0].Properties) == 0 {
 		return fmt.Errorf("font metadata is empty")
 	}
+	container, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if faces[0].Format == "WOFF" || faces[0].Format == "WOFF2" {
+		container, err = fonts.DecodeWebFont(path)
+		if err != nil {
+			return err
+		}
+	}
+	for _, face := range faces {
+		for _, table := range face.Tables {
+			if table.Tag != "head" {
+				continue
+			}
+			end := uint64(table.Offset) + uint64(table.Size)
+			if end > uint64(len(container)) {
+				return fmt.Errorf("face %d head offset is out of range", face.Index)
+			}
+			raw, readErr := fonts.ReadRawTable(path, face.Index, table.Tag)
+			if readErr != nil || !bytes.Equal(raw, container[table.Offset:end]) {
+				return fmt.Errorf("face %d head directory offset mismatch: %v", face.Index, readErr)
+			}
+			break
+		}
+	}
 	for _, table := range faces[0].Tables {
 		if table.Tag == "fvar" && len(faces[0].Axes) == 0 {
 			return fmt.Errorf("variable axes were not parsed")
@@ -1377,8 +1403,12 @@ func (a *appState) details(c *ui.Context) {
 				}
 			}
 			ui.Text(c, "表目录").Bold()
+			offsetLabel := "文件偏移"
+			if face.Format == "WOFF" || face.Format == "WOFF2" {
+				offsetLabel = "解包后偏移"
+			}
 			for _, table := range face.Tables {
-				label := fmt.Sprintf("%s · %d bytes", table.Tag, table.Size)
+				label := fmt.Sprintf("%s · %d bytes · %s 0x%X · 目录 checksum 0x%08X", table.Tag, table.Size, offsetLabel, table.Offset, table.Checksum)
 				if a.detailsMatch(label) && ui.Button(c, label).Clicked() {
 					a.openRawTable(face, table.Tag)
 				}

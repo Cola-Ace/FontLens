@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,8 +27,10 @@ type NameRecord struct {
 }
 
 type Table struct {
-	Tag  string
-	Size int
+	Tag      string
+	Size     int
+	Offset   uint32
+	Checksum uint32
 }
 
 type Axis struct {
@@ -88,12 +91,15 @@ func Read(path string) ([]Face, error) {
 		return nil, err
 	}
 	var loaders []*opentype.Loader
+	var directorySource io.ReaderAt = file
 	if strings.EqualFold(filepath.Ext(path), ".woff2") || strings.EqualFold(filepath.Ext(path), ".woff") {
 		sfnt, decodeErr := DecodeWebFont(path)
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
-		loaders, err = opentype.NewLoaders(bytes.NewReader(sfnt))
+		reader := bytes.NewReader(sfnt)
+		directorySource = reader
+		loaders, err = opentype.NewLoaders(reader)
 	} else {
 		loaders, err = opentype.NewLoaders(file)
 	}
@@ -103,12 +109,23 @@ func Read(path string) ([]Face, error) {
 	result := make([]Face, 0, len(loaders))
 	for index, loader := range loaders {
 		face := Face{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano(), Index: index, Count: len(loaders), Format: strings.ToUpper(strings.TrimPrefix(filepath.Ext(path), "."))}
+		directory, directoryErr := readTableDirectory(directorySource, index)
+		if directoryErr != nil {
+			return nil, fmt.Errorf("face %d directory: %w", index, directoryErr)
+		}
 		for _, tag := range loader.Tables() {
 			data, readErr := loader.RawTable(tag)
 			if readErr != nil {
 				return nil, fmt.Errorf("face %d table %s: %w", index, tag, readErr)
 			}
-			face.Tables = append(face.Tables, Table{Tag: tag.String(), Size: len(data)})
+			record, exists := directory[tag.String()]
+			if !exists {
+				return nil, fmt.Errorf("face %d table %s missing from directory", index, tag)
+			}
+			if record.Size != len(data) {
+				return nil, fmt.Errorf("face %d table %s length mismatch", index, tag)
+			}
+			face.Tables = append(face.Tables, record)
 		}
 		face.Properties = readProperties(loader)
 		if data, readErr := loader.RawTable(opentype.MustNewTag("name")); readErr == nil {
@@ -136,6 +153,46 @@ func Read(path string) ([]Face, error) {
 			face.Axes, face.Instances = readVariations(data, face.Names)
 		}
 		result = append(result, face)
+	}
+	return result, nil
+}
+
+func readTableDirectory(source io.ReaderAt, faceIndex int) (map[string]Table, error) {
+	header := make([]byte, 12)
+	if _, err := source.ReadAt(header, 0); err != nil {
+		return nil, err
+	}
+	offset := int64(0)
+	if string(header[:4]) == "ttcf" {
+		count := binary.BigEndian.Uint32(header[8:12])
+		if faceIndex < 0 || uint32(faceIndex) >= count {
+			return nil, fmt.Errorf("collection face %d is out of range", faceIndex)
+		}
+		entry := make([]byte, 4)
+		if _, err := source.ReadAt(entry, 12+int64(faceIndex)*4); err != nil {
+			return nil, err
+		}
+		offset = int64(binary.BigEndian.Uint32(entry))
+		if _, err := source.ReadAt(header, offset); err != nil {
+			return nil, err
+		}
+	}
+	count := int(binary.BigEndian.Uint16(header[4:6]))
+	if count > 4096 {
+		return nil, fmt.Errorf("too many font tables: %d", count)
+	}
+	records := make([]byte, count*16)
+	if _, err := source.ReadAt(records, offset+12); err != nil {
+		return nil, err
+	}
+	result := make(map[string]Table, count)
+	for i := 0; i < count; i++ {
+		record := records[i*16:]
+		tag := string(record[:4])
+		result[tag] = Table{
+			Tag: tag, Checksum: binary.BigEndian.Uint32(record[4:8]),
+			Offset: binary.BigEndian.Uint32(record[8:12]), Size: int(binary.BigEndian.Uint32(record[12:16])),
+		}
 	}
 	return result, nil
 }
