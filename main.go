@@ -69,7 +69,7 @@ type appState struct {
 	faces             []fonts.Entry
 	faceIndex         map[string]int
 	systemIDs         map[string]bool
-	scopeCounts       map[string]int
+	scopeCounts       map[string]map[string]struct{}
 	rows              []fonts.Entry
 	dirs              map[string][]string
 	errors            []string
@@ -192,6 +192,9 @@ func selfCheck(fontPath, sample string) error {
 	if err := checkNameSorting(); err != nil {
 		return err
 	}
+	if err := checkFontDeduplication(); err != nil {
+		return err
+	}
 	imported, err := coverage.Parse("sample.txt", []byte("---\nname: 示例\ncount: 2\n---\n字\n字\n镜\n"))
 	if err != nil || imported.Name != "示例" || len([]rune(imported.Members)) != 2 {
 		return fmt.Errorf("charset import check failed: %v", err)
@@ -256,15 +259,15 @@ func checkScopeCounts() error {
 	app := appState{
 		sources: []string{root, child},
 		faces: []fonts.Entry{
-			{Path: collection, Index: 0},
-			{Path: collection, Index: 1},
-			{Path: filepath.Join(root, "single.ttf")},
-			{Path: filepath.Join(os.TempDir(), "outside.ttf")},
+			{Path: collection, Index: 0, FullName: "Font Regular"},
+			{Path: collection, Index: 1, FullName: "Font Bold"},
+			{Path: filepath.Join(root, "single.ttf"), FullName: " font regular "},
+			{Path: filepath.Join(os.TempDir(), "outside.ttf"), FullName: "Font Italic"},
 		},
 	}
 	app.systemIDs = map[string]bool{app.faces[0].ID(): true, app.faces[1].ID(): true}
 	app.recount()
-	if app.count("all") != 4 || app.count("system") != 2 || app.count("custom") != 3 || app.count(root) != 3 || app.count(child) != 2 {
+	if app.count("all") != 3 || app.count("system") != 2 || app.count("custom") != 2 || app.count(root) != 2 || app.count(child) != 2 {
 		return fmt.Errorf("directory face counts mismatch")
 	}
 	return nil
@@ -284,6 +287,38 @@ func checkNameSorting() error {
 	app.rebuild()
 	if app.rows[0].FullName != "Font 10" {
 		return fmt.Errorf("natural name descending sort failed")
+	}
+	return nil
+}
+
+func checkFontDeduplication() error {
+	root := filepath.Join(os.TempDir(), "fontlens-dedup-check")
+	app := appState{scope: "all", faces: []fonts.Entry{
+		{Path: filepath.Join(root, "original.ttf"), Format: "TTF", FullName: "Font Regular"},
+		{Path: filepath.Join(root, "copies", "copy.woff2"), Format: "WOFF2", FullName: " font regular "},
+		{Path: filepath.Join(root, "collection.ttc"), Index: 1, Format: "TTC", FullName: "Font Bold"},
+		{Path: filepath.Join(root, "unnamed-a.ttf")},
+		{Path: filepath.Join(root, "unnamed-b.ttf")},
+	}}
+	app.selectedID = app.faces[0].ID()
+	for _, mode := range []int{0, 1, 2} {
+		app.sortMode = mode
+		app.rebuild()
+		if len(app.rows) != 4 || app.selectedRow < 0 || app.rows[app.selectedRow].ID() != app.faces[0].ID() {
+			return fmt.Errorf("font deduplication or selection failed in sort mode %d", mode)
+		}
+	}
+	app.format = "WOFF2"
+	app.query = "regular"
+	app.rebuild()
+	if len(app.rows) != 1 || app.rows[0].ID() != app.faces[1].ID() {
+		return fmt.Errorf("font deduplication format filter failed")
+	}
+	app.format = ""
+	app.scope = filepath.Join(root, "copies")
+	app.rebuild()
+	if len(app.rows) != 1 || app.rows[0].ID() != app.faces[1].ID() {
+		return fmt.Errorf("font deduplication directory filter failed")
 	}
 	return nil
 }
@@ -541,7 +576,7 @@ func (a *appState) refresh() {
 					if item.system && !a.systemIDs[face.ID()] {
 						a.systemIDs[face.ID()] = true
 						if _, exists := a.faceIndex[face.ID()]; exists {
-							a.scopeCounts["system"]++
+							a.addScopeCount("system", fontNameKey(face))
 						}
 					}
 					if index, exists := a.faceIndex[face.ID()]; exists {
@@ -680,8 +715,14 @@ func (a *appState) detailsMatch(value string) bool {
 
 func (a *appState) rebuild() {
 	a.rows = a.rows[:0]
+	seen := make(map[string]struct{})
 	for _, face := range a.faces {
 		if a.inScope(face) && (a.format == "" || face.Format == a.format) && strings.Contains(strings.ToLower(face.FullName), strings.ToLower(a.query)) {
+			key := fontNameKey(face)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
 			a.rows = append(a.rows, face)
 		}
 	}
@@ -715,33 +756,48 @@ func (a *appState) rebuild() {
 }
 
 func (a *appState) recount() {
-	a.scopeCounts = make(map[string]int)
+	a.scopeCounts = make(map[string]map[string]struct{})
 	for _, face := range a.faces {
 		a.addCount(face)
 	}
 }
 
 func (a *appState) addCount(face fonts.Entry) {
-	a.scopeCounts["all"]++
+	key := fontNameKey(face)
+	a.addScopeCount("all", key)
 	if a.systemIDs[face.ID()] {
-		a.scopeCounts["system"]++
+		a.addScopeCount("system", key)
 	}
 	for _, root := range a.sources {
 		if within(root, face.Path) {
-			a.scopeCounts["custom"]++
+			a.addScopeCount("custom", key)
 			break
 		}
 	}
 	for directory := filepath.Dir(face.Path); ; directory = filepath.Dir(directory) {
-		a.scopeCounts[directory]++
+		a.addScopeCount(directory, key)
 		if parent := filepath.Dir(directory); parent == directory {
 			break
 		}
 	}
 }
 
+func fontNameKey(face fonts.Entry) string {
+	if name := strings.TrimSpace(face.FullName); name != "" {
+		return strings.ToLower(name)
+	}
+	return face.ID()
+}
+
+func (a *appState) addScopeCount(scope, key string) {
+	if a.scopeCounts[scope] == nil {
+		a.scopeCounts[scope] = make(map[string]struct{})
+	}
+	a.scopeCounts[scope][key] = struct{}{}
+}
+
 func (a *appState) count(scope string) int {
-	return a.scopeCounts[scope]
+	return len(a.scopeCounts[scope])
 }
 
 func (a *appState) view(c *ui.Context) {
