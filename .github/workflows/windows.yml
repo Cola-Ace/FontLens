@@ -78,8 +78,8 @@ jobs:
         shell: pwsh
         run: |
           $exe = (Resolve-Path 'dist/windows-amd64/FontLens.exe').Path
-          & $exe --self-check
-          if ($LASTEXITCODE -ne 0) { throw 'EXE self-check failed' }
+          $selfCheck = Start-Process -FilePath $exe -ArgumentList '--self-check' -Wait -PassThru -WindowStyle Hidden
+          if ($selfCheck.ExitCode -ne 0) { throw "EXE self-check failed with code $($selfCheck.ExitCode)" }
           $app = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
           try {
             Start-Sleep -Seconds 4

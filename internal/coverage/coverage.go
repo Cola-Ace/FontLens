@@ -46,8 +46,15 @@ var (
 )
 
 func Analyze(characters map[rune]struct{}) Result {
+	return AnalyzeWith(characters, nil)
+}
+
+func AnalyzeWith(characters map[rune]struct{}, imported []Definition) Result {
 	blocksOnce.Do(loadBlocks)
 	result := Result{Charsets: Builtin(characters), Codepoints: len(characters)}
+	for _, definition := range imported {
+		result.Charsets = append(result.Charsets, measure(definition.Name, definition.Members, characters))
+	}
 	counts := make([]int, len(blocks))
 	privateCount := 0
 	for r := range characters {

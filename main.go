@@ -28,7 +28,9 @@ import (
 var embeddedDocs embed.FS
 
 type settings struct {
-	Sources []string `json:"sources"`
+	Sources         []string              `json:"sources"`
+	Charsets        []coverage.Definition `json:"charsets"`
+	CharsetRevision int64                 `json:"charsetRevision"`
 }
 
 type appState struct {
@@ -41,6 +43,9 @@ type appState struct {
 	leftWidth        float32
 	centerWidth      float32
 	sources          []string
+	charsets         []coverage.Definition
+	charsetRevision  int64
+	charsetMessage   string
 	folderInput      string
 	scope            string
 	query            string
@@ -143,6 +148,13 @@ func (a *appState) readFaces(path string) ([]fonts.Face, error) {
 }
 
 func selfCheck(fontPath string) error {
+	imported, err := coverage.Parse("sample.txt", []byte("---\nname: 示例\ncount: 2\n---\n字\n字\n镜\n"))
+	if err != nil || imported.Name != "示例" || len([]rune(imported.Members)) != 2 {
+		return fmt.Errorf("charset import check failed: %v", err)
+	}
+	if _, err := coverage.Parse("invalid.txt", []byte("---\ncount: 3\n---\n字\n镜\n")); err == nil {
+		return fmt.Errorf("charset count validation failed")
+	}
 	if unicode.Version != "17.0.0" {
 		return fmt.Errorf("Unicode version: %s", unicode.Version)
 	}
@@ -271,6 +283,8 @@ func (a *appState) loadSettings() {
 	var saved settings
 	if json.Unmarshal(data, &saved) == nil {
 		a.sources = saved.Sources
+		a.charsets = saved.Charsets
+		a.charsetRevision = saved.CharsetRevision
 	}
 }
 
@@ -282,7 +296,7 @@ func (a *appState) saveSettings() {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return
 	}
-	data, err := json.MarshalIndent(settings{Sources: a.sources}, "", "  ")
+	data, err := json.MarshalIndent(settings{Sources: a.sources, Charsets: a.charsets, CharsetRevision: a.charsetRevision}, "", "  ")
 	if err == nil {
 		_ = os.WriteFile(path, data, 0600)
 	}
@@ -621,6 +635,10 @@ func coverageKey(face fonts.Face) string {
 	return fmt.Sprintf("%s:%d:%d", face.ID(), face.Size, face.Modified)
 }
 
+func (a *appState) coverageCacheKey(face fonts.Face) string {
+	return fmt.Sprintf("%s:charsets:%d", coverageKey(face), a.charsetRevision)
+}
+
 func (a *appState) previewKey(face fonts.Face, size float32, width, height int, ink color.RGBA) string {
 	key := fmt.Sprintf("%s:%g:%d:%d:%d:%d:%d:%s", coverageKey(face), size, width, height, ink.R, ink.G, ink.B, a.previewText)
 	for _, axis := range face.Axes {
@@ -698,18 +716,19 @@ func (a *appState) ensureCoverage(face fonts.Face) {
 		a.coverageCache = make(map[string]coverage.Result)
 		a.coverageLoading = make(map[string]bool)
 	}
-	key := coverageKey(face)
+	key := a.coverageCacheKey(face)
 	if _, exists := a.coverageCache[key]; exists || a.coverageLoading[key] {
 		return
 	}
 	a.coverageLoading[key] = true
+	imported := slices.Clone(a.charsets)
 	go func() {
 		result, found := coverage.Result{}, false
 		if a.store != nil {
 			result, found = a.store.Coverage(key)
 		}
 		if !found {
-			result = coverage.Analyze(face.Characters)
+			result = coverage.AnalyzeWith(face.Characters, imported)
 			if a.store != nil {
 				_ = a.store.SaveCoverage(key, result)
 			}
@@ -728,7 +747,7 @@ func (a *appState) coverageView(c *ui.Context) {
 	}
 	face := a.rows[a.selectedRow]
 	a.ensureCoverage(face)
-	result, ready := a.coverageCache[coverageKey(face)]
+	result, ready := a.coverageCache[a.coverageCacheKey(face)]
 	ui.Column(c).Fill().Padding(20).Gap(12).Children(func() {
 		ui.Row(c).Gap(12).Children(func() {
 			if ui.Button(c, "返回浏览").Clicked() {
@@ -742,6 +761,12 @@ func (a *appState) coverageView(c *ui.Context) {
 			return
 		}
 		ui.Textf(c, "Unicode 映射码位 %d · 字形 %d · Unicode 17.0.0", result.Codepoints, face.Glyphs)
+		if ui.Button(c, "导入 UTF-8 字表").Clicked() {
+			a.chooseCharset()
+		}
+		if a.charsetMessage != "" {
+			ui.Text(c, a.charsetMessage)
+		}
 		ui.SearchField(c, &a.coverageQuery).Placeholder("搜索字表或 Unicode 区块")
 		ui.SplitPercent(c, &a.coverageSplit, func() {
 			a.coverageList(c, "字表", result.Charsets)
@@ -902,6 +927,36 @@ func (a *appState) chooseFolder() {
 			for _, path := range paths {
 				a.addFolder(path)
 			}
+		})
+	}()
+}
+
+func (a *appState) chooseCharset() {
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.window, Title: "导入 UTF-8 字表"})
+		if err != nil {
+			a.window.Update(func() { a.charsetMessage = err.Error() })
+			return
+		}
+		if len(paths) == 0 {
+			return
+		}
+		path := paths[0]
+		data, err := os.ReadFile(path)
+		if err != nil {
+			a.window.Update(func() { a.charsetMessage = fmt.Sprintf("%s: %v", path, err) })
+			return
+		}
+		definition, err := coverage.Parse(path, data)
+		a.window.Update(func() {
+			if err != nil {
+				a.charsetMessage = fmt.Sprintf("%s: %v", path, err)
+				return
+			}
+			a.charsets = append(slices.DeleteFunc(a.charsets, func(item coverage.Definition) bool { return item.Source == path }), definition)
+			a.charsetRevision++
+			a.saveSettings()
+			a.charsetMessage = fmt.Sprintf("已导入 %s · %d 字", definition.Name, len([]rune(definition.Members)))
 		})
 	}()
 }
@@ -1075,13 +1130,19 @@ func (a *appState) details(c *ui.Context) {
 			}
 			ui.Row(c).Gap(8).Children(func() {
 				ui.Text(c, "字符集覆盖").Bold().Grow(1)
+				if ui.Button(c, "导入字表").Clicked() {
+					a.chooseCharset()
+				}
 				if ui.Button(c, "字符集支持").Clicked() {
 					a.coveragePage = true
 				}
 			})
+			if a.charsetMessage != "" {
+				ui.Text(c, a.charsetMessage)
+			}
 			if face.Characters == nil {
 				ui.Text(c, "没有可用的 Unicode cmap").TextColor(c.Theme().TextMuted)
-			} else if result, ready := a.coverageCache[coverageKey(face)]; ready {
+			} else if result, ready := a.coverageCache[a.coverageCacheKey(face)]; ready {
 				labels := []string{"字表", "Unicode 区块"}
 				if ui.Button(c, labels[a.coverageMode]).Clicked() {
 					a.coverageMode = (a.coverageMode + 1) % 2
