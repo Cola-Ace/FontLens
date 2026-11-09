@@ -24,6 +24,8 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
+	"golang.org/x/text/collate"
+	"golang.org/x/text/language"
 )
 
 //go:embed docs/USER.md LICENSE third_party/licenses/*
@@ -163,6 +165,9 @@ func selfCheck(fontPath string) error {
 	if err := checkScopeCounts(); err != nil {
 		return err
 	}
+	if err := checkNameSorting(); err != nil {
+		return err
+	}
 	imported, err := coverage.Parse("sample.txt", []byte("---\nname: 示例\ncount: 2\n---\n字\n字\n镜\n"))
 	if err != nil || imported.Name != "示例" || len([]rune(imported.Members)) != 2 {
 		return fmt.Errorf("charset import check failed: %v", err)
@@ -226,6 +231,24 @@ func checkScopeCounts() error {
 	app.recount()
 	if app.count("all") != 4 || app.count("custom") != 3 || app.count(root) != 3 || app.count(child) != 2 {
 		return fmt.Errorf("directory face counts mismatch")
+	}
+	return nil
+}
+
+func checkNameSorting() error {
+	app := appState{scope: "all", faces: []fonts.Face{
+		{Path: "font10.ttf", FullName: "Font 10"},
+		{Path: "font2.ttf", FullName: "font 2"},
+	}}
+	app.sortMode = 1
+	app.rebuild()
+	if app.rows[0].FullName != "font 2" {
+		return fmt.Errorf("natural name ascending sort failed")
+	}
+	app.sortMode = 2
+	app.rebuild()
+	if app.rows[0].FullName != "Font 10" {
+		return fmt.Errorf("natural name descending sort failed")
 	}
 	return nil
 }
@@ -543,8 +566,9 @@ func (a *appState) rebuild() {
 		}
 	}
 	if a.sortMode != 0 {
+		nameOrder := collate.New(language.Chinese, collate.IgnoreCase, collate.Numeric)
 		slices.SortStableFunc(a.rows, func(left, right fonts.Face) int {
-			order := strings.Compare(strings.ToLower(left.FullName), strings.ToLower(right.FullName))
+			order := nameOrder.CompareString(left.FullName, right.FullName)
 			if order == 0 {
 				order = strings.Compare(strings.ToLower(left.Path), strings.ToLower(right.Path))
 			}
