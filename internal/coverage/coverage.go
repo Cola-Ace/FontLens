@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+
+	"fontlens/internal/codepoints"
 )
 
 //go:embed data/gb2312.txt
@@ -46,19 +48,19 @@ var (
 	privateTotalValue int
 )
 
-func Analyze(characters map[rune]struct{}) Result {
+func Analyze(characters codepoints.Set) Result {
 	return AnalyzeWith(characters, nil)
 }
 
-func AnalyzeWith(characters map[rune]struct{}, imported []Definition) Result {
+func AnalyzeWith(characters codepoints.Set, imported []Definition) Result {
 	blocksOnce.Do(loadBlocks)
-	result := Result{Charsets: Builtin(characters), Codepoints: len(characters)}
+	result := Result{Charsets: Builtin(characters), Codepoints: characters.Count()}
 	for _, definition := range imported {
 		result.Charsets = append(result.Charsets, measure(definition.Name, definition.Members, characters))
 	}
 	counts := make([]int, len(blocks))
 	privateCount := 0
-	for r := range characters {
+	for r := range characters.All() {
 		if unicode.Is(unicode.Co, r) {
 			privateCount++
 			continue
@@ -121,7 +123,7 @@ func loadBlocks() {
 	}
 }
 
-func Builtin(characters map[rune]struct{}) []Row {
+func Builtin(characters codepoints.Set) []Row {
 	return []Row{
 		measure("GB2312 汉字集", gb2312, characters),
 		measure("GBK 汉字集", gbk, characters),
@@ -132,11 +134,11 @@ func Builtin(characters map[rune]struct{}) []Row {
 	}
 }
 
-func measure(name, members string, characters map[rune]struct{}) Row {
+func measure(name, members string, characters codepoints.Set) Row {
 	row := Row{Name: name}
 	for _, r := range members {
 		row.Total++
-		if _, ok := characters[r]; ok {
+		if characters.Contains(r) {
 			row.Covered++
 		}
 	}

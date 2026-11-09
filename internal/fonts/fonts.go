@@ -12,6 +12,7 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"fontlens/internal/codepoints"
 	"github.com/go-text/typesetting/font"
 	"github.com/go-text/typesetting/font/opentype"
 	"github.com/go-text/typesetting/font/opentype/tables"
@@ -48,14 +49,20 @@ type NamedInstance struct {
 	Coordinates map[string]float32
 }
 
+type Entry struct {
+	Path     string
+	Size     int64
+	Modified int64
+	Index    int
+	Count    int
+	Format   string
+	FullName string
+}
+
+func (f Entry) ID() string { return fmt.Sprintf("%s#%d", strings.ToLower(f.Path), f.Index) }
+
 type Face struct {
-	Path       string
-	Size       int64
-	Modified   int64
-	Index      int
-	Count      int
-	Format     string
-	FullName   string
+	Entry
 	Family     string
 	Subfamily  string
 	PostScript string
@@ -63,13 +70,13 @@ type Face struct {
 	Tables     []Table
 	Glyphs     uint16
 	Cmap       string
-	Characters map[rune]struct{}
+	Characters codepoints.Set
 	Axes       []Axis
 	Instances  []NamedInstance
 	Properties []Property
 }
 
-func (f Face) ID() string { return fmt.Sprintf("%s#%d", strings.ToLower(f.Path), f.Index) }
+func (f Face) HasUnicodeCmap() bool { return f.Cmap != "" && f.Cmap != "未提供" }
 
 func DecodeWebFont(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
@@ -83,6 +90,33 @@ func DecodeWebFont(path string) ([]byte, error) {
 }
 
 func Read(path string) ([]Face, error) {
+	return read(path, -1, false)
+}
+
+func ReadIndex(path string) ([]Entry, error) {
+	faces, err := read(path, -1, true)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]Entry, len(faces))
+	for i, face := range faces {
+		entries[i] = face.Entry
+	}
+	return entries, nil
+}
+
+func ReadFace(path string, index int) (Face, error) {
+	if index < 0 {
+		return Face{}, fmt.Errorf("face index %d is out of range", index)
+	}
+	faces, err := read(path, index, false)
+	if err != nil {
+		return Face{}, err
+	}
+	return faces[0], nil
+}
+
+func read(path string, selected int, indexOnly bool) ([]Face, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -94,6 +128,7 @@ func Read(path string) ([]Face, error) {
 	}
 	var loaders []*opentype.Loader
 	var directorySource io.ReaderAt = file
+	directorySize := info.Size()
 	if strings.EqualFold(filepath.Ext(path), ".woff2") || strings.EqualFold(filepath.Ext(path), ".woff") {
 		sfnt, decodeErr := DecodeWebFont(path)
 		if decodeErr != nil {
@@ -101,6 +136,7 @@ func Read(path string) ([]Face, error) {
 		}
 		reader := bytes.NewReader(sfnt)
 		directorySource = reader
+		directorySize = int64(len(sfnt))
 		loaders, err = opentype.NewLoaders(reader)
 	} else {
 		loaders, err = opentype.NewLoaders(file)
@@ -108,38 +144,50 @@ func Read(path string) ([]Face, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := make([]Face, 0, len(loaders))
+	if selected >= len(loaders) {
+		return nil, fmt.Errorf("face index %d is out of range", selected)
+	}
+	capacity := len(loaders)
+	if selected >= 0 {
+		capacity = 1
+	}
+	result := make([]Face, 0, capacity)
 	for index, loader := range loaders {
-		face := Face{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano(), Index: index, Count: len(loaders), Format: strings.ToUpper(strings.TrimPrefix(filepath.Ext(path), "."))}
+		if selected >= 0 && index != selected {
+			continue
+		}
+		face := Face{Entry: Entry{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano(), Index: index, Count: len(loaders), Format: strings.ToUpper(strings.TrimPrefix(filepath.Ext(path), "."))}}
+		var names []NameRecord
+		if data, readErr := loader.RawTable(opentype.MustNewTag("name")); readErr == nil {
+			names = readNames(data)
+			face.FullName = preferredName(names, 4)
+		}
+		if face.FullName == "" {
+			face.FullName = fmt.Sprintf("名称未提供 · %s · 面 %d", filepath.Base(path), index+1)
+		}
+		if indexOnly {
+			result = append(result, face)
+			continue
+		}
 		directory, directoryErr := readTableDirectory(directorySource, index)
 		if directoryErr != nil {
 			return nil, fmt.Errorf("face %d directory: %w", index, directoryErr)
 		}
 		for _, tag := range loader.Tables() {
-			data, readErr := loader.RawTable(tag)
-			if readErr != nil {
-				return nil, fmt.Errorf("face %d table %s: %w", index, tag, readErr)
-			}
 			record, exists := directory[tag.String()]
 			if !exists {
 				return nil, fmt.Errorf("face %d table %s missing from directory", index, tag)
 			}
-			if record.Size != len(data) {
-				return nil, fmt.Errorf("face %d table %s length mismatch", index, tag)
+			if uint64(record.Offset)+uint64(record.Size) > uint64(directorySize) {
+				return nil, fmt.Errorf("face %d table %s exceeds file size", index, tag)
 			}
 			face.Tables = append(face.Tables, record)
 		}
 		face.Properties = readProperties(loader)
-		if data, readErr := loader.RawTable(opentype.MustNewTag("name")); readErr == nil {
-			face.Names = readNames(data)
-			face.FullName = preferredName(face.Names, 4)
-			face.Family = preferredName(face.Names, 1)
-			face.Subfamily = preferredName(face.Names, 2)
-			face.PostScript = preferredName(face.Names, 6)
-		}
-		if face.FullName == "" {
-			face.FullName = fmt.Sprintf("名称未提供 · %s · 面 %d", filepath.Base(path), index+1)
-		}
+		face.Names = names
+		face.Family = preferredName(names, 1)
+		face.Subfamily = preferredName(names, 2)
+		face.PostScript = preferredName(names, 6)
 		if data, readErr := loader.RawTable(opentype.MustNewTag("maxp")); readErr == nil {
 			if maxp, _, parseErr := tables.ParseMaxp(data); parseErr == nil {
 				face.Glyphs = maxp.NumGlyphs
@@ -414,7 +462,7 @@ func GlyphMetrics(path string, faceIndex int, glyph uint16) (uint16, int16, erro
 	return advance, int16(binary.BigEndian.Uint16(hmtx[bearingOffset:])), nil
 }
 
-func readCmap(data []byte) (map[rune]struct{}, string, error) {
+func readCmap(data []byte) (codepoints.Set, string, error) {
 	table, _, err := tables.ParseCmap(data)
 	if err != nil {
 		return nil, "", err
@@ -432,21 +480,21 @@ func readCmap(data []byte) (map[rune]struct{}, string, error) {
 			if mapping == nil {
 				continue
 			}
-			chars := make(map[rune]struct{})
+			var chars []rune
 			iter := mapping.Iter()
 			for iter.Next() {
 				r, glyph := iter.Char()
 				if glyph != 0 && utf8.ValidRune(r) && !(r >= 0xD800 && r <= 0xDFFF) {
-					chars[r] = struct{}{}
+					chars = append(chars, r)
 				}
 			}
-			return chars, fmt.Sprintf("(%d, %d)", wanted[0], wanted[1]), nil
+			return codepoints.New(chars), fmt.Sprintf("(%d, %d)", wanted[0], wanted[1]), nil
 		}
 	}
 	return nil, "未提供", nil
 }
 
-func Scan(ctx context.Context, root string, read func(string) ([]Face, error), directory func(string), visit func(Face), report func(string, error)) error {
+func Scan(ctx context.Context, root string, read func(string) ([]Entry, error), directory func(string), visit func(Entry), report func(string, error)) error {
 	return filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()

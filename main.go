@@ -47,6 +47,10 @@ type appState struct {
 	table             ui.ListState
 	selectedRow       int
 	selectedID        string
+	detailFace        *fonts.Face
+	detailKey         string
+	detailGeneration  int
+	detailError       string
 	leftWidth         float32
 	centerWidth       float32
 	sources           []string
@@ -59,11 +63,11 @@ type appState struct {
 	sortMode          int
 	tableSort         ui.SortOrder
 	sortSeen          ui.SortOrder
-	faces             []fonts.Face
+	faces             []fonts.Entry
 	faceIndex         map[string]int
 	systemIDs         map[string]bool
 	scopeCounts       map[string]int
-	rows              []fonts.Face
+	rows              []fonts.Entry
 	dirs              map[string][]string
 	errors            []string
 	scanning          bool
@@ -93,7 +97,7 @@ type appState struct {
 	comparePage       bool
 	compareLimit      bool
 	rawViewOpen       bool
-	rawFace           fonts.Face
+	rawFace           fonts.Entry
 	rawTag            string
 	rawData           []byte
 	rawError          string
@@ -158,7 +162,7 @@ func main() {
 	}
 }
 
-func (a *appState) readFaces(path string) ([]fonts.Face, error) {
+func (a *appState) readFaces(path string) ([]fonts.Entry, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -168,7 +172,7 @@ func (a *appState) readFaces(path string) ([]fonts.Face, error) {
 			return faces, nil
 		}
 	}
-	faces, err := fonts.Read(path)
+	faces, err := fonts.ReadIndex(path)
 	if err == nil && a.store != nil {
 		_ = a.store.SaveFaces(path, info.Size(), info.ModTime().UnixNano(), faces)
 	}
@@ -192,7 +196,7 @@ func selfCheck(fontPath, sample string) error {
 	if unicode.Version != "17.0.0" {
 		return fmt.Errorf("Unicode version: %s", unicode.Version)
 	}
-	result := coverage.Analyze(map[rune]struct{}{})
+	result := coverage.Analyze(nil)
 	if result.Charsets[0].Total != 6763 || result.Charsets[1].Total != 20923 {
 		return fmt.Errorf("charset denominator mismatch")
 	}
@@ -245,7 +249,7 @@ func checkScopeCounts() error {
 	collection := filepath.Join(child, "faces.ttc")
 	app := appState{
 		sources: []string{root, child},
-		faces: []fonts.Face{
+		faces: []fonts.Entry{
 			{Path: collection, Index: 0},
 			{Path: collection, Index: 1},
 			{Path: filepath.Join(root, "single.ttf")},
@@ -261,7 +265,7 @@ func checkScopeCounts() error {
 }
 
 func checkNameSorting() error {
-	app := appState{scope: "all", faces: []fonts.Face{
+	app := appState{scope: "all", faces: []fonts.Entry{
 		{Path: "font10.ttf", FullName: "Font 10"},
 		{Path: "font2.ttf", FullName: "font 2"},
 	}}
@@ -320,7 +324,7 @@ func checkFont(path, sample string) error {
 			return fmt.Errorf("variable axes were not parsed")
 		}
 	}
-	for character := range faces[0].Characters {
+	for character := range faces[0].Characters.All() {
 		glyph, lookupErr := fonts.LookupGlyph(path, 0, character)
 		if lookupErr != nil || glyph == 0 || glyph >= faces[0].Glyphs {
 			return fmt.Errorf("glyph lookup U+%04X: glyph %d: %v", character, glyph, lookupErr)
@@ -386,14 +390,27 @@ func checkStore(path string, faces []fonts.Face) error {
 	}
 	defer cache.Close()
 	face := faces[0]
-	if err := cache.SaveFaces(path, face.Size, face.Modified, faces); err != nil {
+	entries, err := fonts.ReadIndex(path)
+	if err != nil || len(entries) != len(faces) {
+		return fmt.Errorf("font index read: %v", err)
+	}
+	for i, entry := range entries {
+		if entry != faces[i].Entry {
+			return fmt.Errorf("font index entry mismatch")
+		}
+	}
+	selected, err := fonts.ReadFace(path, face.Index)
+	if err != nil || selected.Entry != face.Entry || !slices.Equal(selected.Characters, face.Characters) || len(selected.Names) != len(face.Names) {
+		return fmt.Errorf("font details read mismatch: %v", err)
+	}
+	if err := cache.SaveFaces(path, face.Size, face.Modified, entries); err != nil {
 		return err
 	}
 	reloaded, found := cache.Faces(path, face.Size, face.Modified)
-	if !found || len(reloaded) != len(faces) || len(reloaded[0].Characters) != len(face.Characters) {
+	if !found || !slices.Equal(reloaded, entries) {
 		return fmt.Errorf("font index cache mismatch")
 	}
-	key := coverageKey(face)
+	key := coverageKey(face.Entry)
 	result := coverage.Analyze(face.Characters)
 	if err := cache.SaveCoverage(key, result); err != nil {
 		return err
@@ -489,7 +506,7 @@ func (a *appState) refresh() {
 	go func() {
 		seen := make(map[string]struct{})
 		type scanFace struct {
-			face   fonts.Face
+			face   fonts.Entry
 			system bool
 		}
 		batch := make([]scanFace, 0, 32)
@@ -522,7 +539,7 @@ func (a *appState) refresh() {
 				a.rebuild()
 			})
 		}
-		enqueue := func(face fonts.Face, system bool) {
+		enqueue := func(face fonts.Entry, system bool) {
 			id := face.ID()
 			if _, exists := seen[id]; exists {
 				return
@@ -590,7 +607,7 @@ func (a *appState) refresh() {
 						a.dirs[parent] = append(a.dirs[parent], path)
 					}
 				})
-			}, func(face fonts.Face) {
+			}, func(face fonts.Entry) {
 				enqueue(face, false)
 			}, func(path string, err error) {
 				report(fmt.Sprintf("%s: %v", path, err))
@@ -600,7 +617,7 @@ func (a *appState) refresh() {
 		a.window.Update(func() {
 			if current == a.scanID {
 				if ctx.Err() == nil {
-					a.faces = slices.DeleteFunc(a.faces, func(face fonts.Face) bool {
+					a.faces = slices.DeleteFunc(a.faces, func(face fonts.Entry) bool {
 						_, exists := seen[face.ID()]
 						return !exists
 					})
@@ -618,7 +635,7 @@ func (a *appState) refresh() {
 	}()
 }
 
-func (a *appState) inScope(face fonts.Face) bool {
+func (a *appState) inScope(face fonts.Entry) bool {
 	switch a.scope {
 	case "all":
 		return true
@@ -654,7 +671,7 @@ func (a *appState) rebuild() {
 	}
 	if a.sortMode != 0 {
 		nameOrder := collate.New(language.Chinese, collate.IgnoreCase, collate.Numeric)
-		slices.SortStableFunc(a.rows, func(left, right fonts.Face) int {
+		slices.SortStableFunc(a.rows, func(left, right fonts.Entry) int {
 			order := nameOrder.CompareString(left.FullName, right.FullName)
 			if order == 0 {
 				order = strings.Compare(strings.ToLower(left.Path), strings.ToLower(right.Path))
@@ -677,6 +694,7 @@ func (a *appState) rebuild() {
 	}
 	if a.selectedRow < 0 {
 		a.selectedID = ""
+		a.releaseDetails()
 	}
 }
 
@@ -687,7 +705,7 @@ func (a *appState) recount() {
 	}
 }
 
-func (a *appState) addCount(face fonts.Face) {
+func (a *appState) addCount(face fonts.Entry) {
 	a.scopeCounts["all"]++
 	if a.systemIDs[face.ID()] {
 		a.scopeCounts["system"]++
@@ -743,13 +761,13 @@ func (a *appState) view(c *ui.Context) {
 	}).Fill()
 }
 
-func (a *appState) openRawTable(face fonts.Face, tag string) {
+func (a *appState) openRawTable(face fonts.Entry, tag string) {
 	a.rawFace, a.rawTag, a.rawData, a.rawError, a.rawPage = face, tag, nil, "", 0
 	a.rawViewOpen = true
 	go func() {
 		data, err := fonts.ReadRawTable(face.Path, face.Index, tag)
 		a.window.Update(func() {
-			if a.rawFace.ID() != face.ID() || a.rawTag != tag {
+			if !a.rawViewOpen || a.rawFace.ID() != face.ID() || a.rawTag != tag {
 				return
 			}
 			if err != nil {
@@ -766,6 +784,7 @@ func (a *appState) rawTableView(c *ui.Context) {
 		ui.Row(c).Gap(12).Children(func() {
 			if ui.Button(c, "返回详情").Clicked() {
 				a.rawViewOpen = false
+				a.rawData = nil
 			}
 			ui.Textf(c, "%s · %s 表原始数据", a.rawFace.FullName, a.rawTag).FontSize(20).Bold()
 		})
@@ -810,7 +829,7 @@ func (a *appState) rawTableView(c *ui.Context) {
 }
 
 func (a *appState) compareView(c *ui.Context) {
-	faces := make([]fonts.Face, 0, len(a.compareIDs))
+	faces := make([]fonts.Entry, 0, len(a.compareIDs))
 	for _, id := range a.compareIDs {
 		if index, exists := a.faceIndex[id]; exists {
 			faces = append(faces, a.faces[index])
@@ -882,23 +901,29 @@ func (a *appState) previewToolbar(c *ui.Context) {
 	})
 }
 
-func coverageKey(face fonts.Face) string {
+func coverageKey(face fonts.Entry) string {
 	return fmt.Sprintf("%s:%d:%d", face.ID(), face.Size, face.Modified)
 }
 
-func (a *appState) coverageCacheKey(face fonts.Face) string {
+func (a *appState) coverageCacheKey(face fonts.Entry) string {
 	return fmt.Sprintf("%s:charsets:%d", coverageKey(face), a.charsetRevision)
 }
 
-func (a *appState) previewKey(face fonts.Face, sample string, size float32, width, height int, ink color.RGBA) string {
+func (a *appState) previewKey(face fonts.Entry, sample string, size float32, width, height int, ink color.RGBA) string {
 	key := fmt.Sprintf("%s:%g:%g:%d:%d:%d:%d:%d:%s", coverageKey(face), size, a.previewLineHeight, width, height, ink.R, ink.G, ink.B, sample)
-	for _, axis := range face.Axes {
-		key += fmt.Sprintf(":%s=%.3f", axis.Tag, a.axisValues[face.ID()][axis.Tag])
+	axes := a.axisValues[face.ID()]
+	tags := make([]string, 0, len(axes))
+	for tag := range axes {
+		tags = append(tags, tag)
+	}
+	slices.Sort(tags)
+	for _, tag := range tags {
+		key += fmt.Sprintf(":%s=%.3f", tag, axes[tag])
 	}
 	return key
 }
 
-func (a *appState) ensurePreview(face fonts.Face, sample string, size float32, width, height int, ink color.RGBA) string {
+func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, width, height int, ink color.RGBA) string {
 	if a.previewCache == nil {
 		a.previewCache = make(map[string]*ui.Bitmap)
 		a.previewLoading = make(map[string]bool)
@@ -931,11 +956,11 @@ func (a *appState) ensurePreview(face fonts.Face, sample string, size float32, w
 	return key
 }
 
-func (a *appState) previewView(c *ui.Context, face fonts.Face, size float32, width, height int) {
+func (a *appState) previewView(c *ui.Context, face fonts.Entry, size float32, width, height int) {
 	a.previewTextView(c, face, a.previewText, size, width, height)
 }
 
-func (a *appState) previewTextView(c *ui.Context, face fonts.Face, sample string, size float32, width, height int) {
+func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) {
 	textColor := c.Theme().Text
 	key := a.ensurePreview(face, sample, size, width, height, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
 	slot := fmt.Sprintf("%s:%d:%d:%d:%d:%d", face.ID(), width, height, textColor.R, textColor.G, textColor.B)
@@ -973,32 +998,76 @@ func (a *appState) initAxes(face fonts.Face) {
 	}
 }
 
+func (a *appState) releaseDetails() {
+	if a.detailKey == "" {
+		return
+	}
+	a.detailGeneration++
+	a.detailKey, a.detailError = "", ""
+	a.detailFace = nil
+	a.coverageCache, a.coverageLoading = nil, nil
+	a.glyphFaceID, a.glyphOutput, a.glyphCharacter = "", "", ""
+	a.rawFace, a.rawData = fonts.Entry{}, nil
+	a.rawViewOpen = false
+}
+
+func (a *appState) ensureDetails(entry fonts.Entry) *fonts.Face {
+	key := coverageKey(entry)
+	if a.detailKey == key {
+		return a.detailFace
+	}
+	a.releaseDetails()
+	a.detailKey = key
+	generation := a.detailGeneration
+	go func() {
+		face, err := fonts.ReadFace(entry.Path, entry.Index)
+		a.window.Update(func() {
+			if generation != a.detailGeneration || key != a.detailKey {
+				return
+			}
+			if err != nil {
+				a.detailError = "字体详情读取失败: " + err.Error()
+			} else if coverageKey(face.Entry) != key {
+				a.detailError = "字体文件已更改，请刷新列表"
+			} else {
+				a.detailFace = &face
+			}
+		})
+	}()
+	return nil
+}
+
 func (a *appState) ensureCoverage(face fonts.Face) {
-	if face.Characters == nil {
+	if !face.HasUnicodeCmap() {
 		return
 	}
 	if a.coverageCache == nil {
 		a.coverageCache = make(map[string]coverage.Result)
 		a.coverageLoading = make(map[string]bool)
 	}
-	key := a.coverageCacheKey(face)
+	key := a.coverageCacheKey(face.Entry)
 	if _, exists := a.coverageCache[key]; exists || a.coverageLoading[key] {
 		return
 	}
 	a.coverageLoading[key] = true
 	imported := slices.Clone(a.charsets)
+	generation := a.detailGeneration
+	entry, characters := face.Entry, face.Characters
 	go func() {
 		result, found := coverage.Result{}, false
 		if a.store != nil {
 			result, found = a.store.Coverage(key)
 		}
 		if !found {
-			result = coverage.AnalyzeWith(face.Characters, imported)
+			result = coverage.AnalyzeWith(characters, imported)
 			if a.store != nil {
 				_ = a.store.SaveCoverage(key, result)
 			}
 		}
 		a.window.Update(func() {
+			if generation != a.detailGeneration || key != a.coverageCacheKey(entry) {
+				return
+			}
 			a.coverageCache[key] = result
 			delete(a.coverageLoading, key)
 		})
@@ -1010,9 +1079,13 @@ func (a *appState) coverageView(c *ui.Context) {
 		a.coveragePage = false
 		return
 	}
-	face := a.rows[a.selectedRow]
-	a.ensureCoverage(face)
-	result, ready := a.coverageCache[a.coverageCacheKey(face)]
+	face := a.ensureDetails(a.rows[a.selectedRow])
+	if face == nil {
+		a.coveragePage = false
+		return
+	}
+	a.ensureCoverage(*face)
+	result, ready := a.coverageCache[a.coverageCacheKey(face.Entry)]
 	ui.Column(c).Fill().Padding(20).Gap(12).Children(func() {
 		ui.Row(c).Gap(12).Children(func() {
 			if ui.Button(c, "返回浏览").Clicked() {
@@ -1021,7 +1094,7 @@ func (a *appState) coverageView(c *ui.Context) {
 			ui.Text(c, "字符集支持").FontSize(22).Bold()
 		})
 		ui.Textf(c, "%s · %s · 面 %d", face.FullName, face.Path, face.Index).SingleLine()
-		if face.Characters == nil {
+		if !face.HasUnicodeCmap() {
 			ui.Text(c, "没有可用的 Unicode cmap，无法计算字符集覆盖").TextColor(c.Theme().TextMuted)
 			return
 		}
@@ -1405,15 +1478,24 @@ func (a *appState) details(c *ui.Context) {
 	ui.Column(c).Fill().Padding(16).Gap(12).Children(func() {
 		ui.Text(c, "字体详细信息").FontSize(18).Bold()
 		if a.selectedRow < 0 || a.selectedRow >= len(a.rows) {
+			a.releaseDetails()
 			ui.Text(c, "选择字体查看详情").TextColor(c.Theme().TextMuted)
 			return
 		}
-		face := a.rows[a.selectedRow]
-		if a.glyphFaceID != face.ID() {
-			a.lookupGlyph(face)
+		face := a.ensureDetails(a.rows[a.selectedRow])
+		if face == nil {
+			if a.detailError != "" {
+				ui.Text(c, a.detailError).TextColor(c.Theme().TextMuted)
+			} else {
+				ui.Text(c, "正在加载字体详情…").TextColor(c.Theme().TextMuted)
+			}
+			return
 		}
-		a.initAxes(face)
-		a.ensureCoverage(face)
+		if a.glyphFaceID != face.ID() {
+			a.lookupGlyph(*face)
+		}
+		a.initAxes(*face)
+		a.ensureCoverage(*face)
 		ui.Scroll(c).Grow(1).Gap(12).Children(func() {
 			ui.Text(c, face.FullName).FontSize(24).Bold()
 			ui.Text(c, face.Path)
@@ -1423,17 +1505,17 @@ func (a *appState) details(c *ui.Context) {
 			ui.Textf(c, "Family Name: %s", face.Family)
 			ui.Textf(c, "Subfamily: %s", face.Subfamily)
 			ui.Textf(c, "PostScript: %s", face.PostScript)
-			ui.Textf(c, "字形数: %d · Unicode 映射码位: %d", face.Glyphs, len(face.Characters))
+			ui.Textf(c, "字形数: %d · Unicode 映射码位: %d", face.Glyphs, face.Characters.Count())
 			ui.Textf(c, "采用 cmap: %s", face.Cmap)
 			ui.Text(c, "字符与字形查询").Bold()
 			if ui.TextInput(c, &a.glyphInput).Placeholder("字符、U+4E00 或 gid:12").Changed() {
-				a.lookupGlyph(face)
+				a.lookupGlyph(*face)
 			}
 			if a.glyphOutput != "" {
 				ui.Text(c, a.glyphOutput)
 			}
 			if a.glyphCharacter != "" {
-				a.previewTextView(c, face, a.glyphCharacter, 64, 200, 90)
+				a.previewTextView(c, face.Entry, a.glyphCharacter, 64, 200, 90)
 				ui.Row(c).Gap(8).Children(func() {
 					if ui.Button(c, "复制字符").Clicked() {
 						mygo.Clipboard.WriteText(a.glyphCharacter)
@@ -1506,9 +1588,9 @@ func (a *appState) details(c *ui.Context) {
 			if a.charsetMessage != "" {
 				ui.Text(c, a.charsetMessage)
 			}
-			if face.Characters == nil {
+			if !face.HasUnicodeCmap() {
 				ui.Text(c, "没有可用的 Unicode cmap").TextColor(c.Theme().TextMuted)
-			} else if result, ready := a.coverageCache[a.coverageCacheKey(face)]; ready {
+			} else if result, ready := a.coverageCache[a.coverageCacheKey(face.Entry)]; ready {
 				labels := []string{"字表", "Unicode 区块"}
 				if ui.Button(c, labels[a.coverageMode]).Clicked() {
 					a.coverageMode = (a.coverageMode + 1) % 2
@@ -1563,7 +1645,7 @@ func (a *appState) details(c *ui.Context) {
 			for _, table := range face.Tables {
 				label := fmt.Sprintf("%s · %d bytes · %s 0x%X · 目录 checksum 0x%08X", table.Tag, table.Size, offsetLabel, table.Offset, table.Checksum)
 				if a.detailsMatch(label) && ui.Button(c, label).Clicked() {
-					a.openRawTable(face, table.Tag)
+					a.openRawTable(face.Entry, table.Tag)
 				}
 			}
 		})

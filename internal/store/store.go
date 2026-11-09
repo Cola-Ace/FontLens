@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const version = 5
+const version = 7
 
 type Store struct{ db *sql.DB }
 
@@ -44,20 +44,20 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-func (s *Store) Faces(path string, size, modified int64) ([]fonts.Face, bool) {
+func (s *Store) Faces(path string, size, modified int64) ([]fonts.Entry, bool) {
 	var payload []byte
 	err := s.db.QueryRow(`SELECT payload FROM faces WHERE path=? AND size=? AND modified=? AND version=?`, path, size, modified, version).Scan(&payload)
 	if err != nil {
 		return nil, false
 	}
-	var faces []fonts.Face
+	var faces []fonts.Entry
 	if decode(payload, &faces) != nil {
 		return nil, false
 	}
 	return faces, true
 }
 
-func (s *Store) SaveFaces(path string, size, modified int64, faces []fonts.Face) error {
+func (s *Store) SaveFaces(path string, size, modified int64, faces []fonts.Entry) error {
 	payload, err := encode(faces)
 	if err != nil {
 		return err

@@ -28,9 +28,18 @@ type oneFace struct{ face *font.Face }
 
 func (f oneFace) ResolveFace(r rune) *font.Face { return f.face }
 
+var renderSlots = make(chan struct{}, 1)
+
 func Render(ctx context.Context, path string, faceIndex int, axes map[string]float32, sample string, size, lineHeight float32, width, height int, ink color.RGBA) (*image.RGBA, error) {
 	if width <= 0 || height <= 0 || size <= 0 {
 		return nil, fmt.Errorf("invalid preview dimensions")
+	}
+	// Each render parses font outlines; bound concurrent copies of large fonts.
+	select {
+	case renderSlots <- struct{}{}:
+		defer func() { <-renderSlots }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
