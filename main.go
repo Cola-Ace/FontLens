@@ -85,6 +85,7 @@ type appState struct {
 	previewSize       float32
 	previewLineHeight float32
 	previewCache      map[string]*ui.Bitmap
+	previewLast       map[string]*ui.Bitmap
 	previewLoading    map[string]bool
 	previewErrors     map[string]string
 	compareIDs        []string
@@ -936,10 +937,20 @@ func (a *appState) previewView(c *ui.Context, face fonts.Face, size float32, wid
 func (a *appState) previewTextView(c *ui.Context, face fonts.Face, sample string, size float32, width, height int) {
 	textColor := c.Theme().Text
 	key := a.ensurePreview(face, sample, size, width, height, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
+	slot := fmt.Sprintf("%s:%d:%d:%d:%d:%d", face.ID(), width, height, textColor.R, textColor.G, textColor.B)
 	if bitmap := a.previewCache[key]; bitmap != nil {
+		if a.previewLast == nil || len(a.previewLast) >= 400 {
+			a.previewLast = make(map[string]*ui.Bitmap)
+		}
+		a.previewLast[slot] = bitmap
 		ui.Image(c, bitmap).Size(float32(width), float32(height)).Fit(ui.Contain)
 	} else if message := a.previewErrors[key]; message != "" {
 		ui.Text(c, message).TextColor(c.Theme().TextMuted).SingleLine()
+	} else if bitmap := a.previewLast[slot]; bitmap != nil {
+		ui.Box(c).Size(float32(width), float32(height)).Children(func() {
+			ui.Image(c, bitmap).Size(float32(width), float32(height)).Fit(ui.Contain)
+			ui.Text(c, "更新中…").Absolute().Right(4).Bottom(2).FontSize(12).TextColor(c.Theme().TextMuted)
+		})
 	} else {
 		ui.Text(c, "预览生成中…").TextColor(c.Theme().TextMuted)
 	}
@@ -1009,6 +1020,10 @@ func (a *appState) coverageView(c *ui.Context) {
 			ui.Text(c, "字符集支持").FontSize(22).Bold()
 		})
 		ui.Textf(c, "%s · %s · 面 %d", face.FullName, face.Path, face.Index).SingleLine()
+		if face.Characters == nil {
+			ui.Text(c, "没有可用的 Unicode cmap，无法计算字符集覆盖").TextColor(c.Theme().TextMuted)
+			return
+		}
 		if !ready {
 			ui.Text(c, "正在计算覆盖统计…")
 			return
