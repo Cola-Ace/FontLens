@@ -103,7 +103,7 @@ func loadBlocks() {
 		}
 		start, _ := strconv.ParseUint(startText, 16, 32)
 		end, _ := strconv.ParseUint(endText, 16, 32)
-		b := block{name: name, start: rune(start), end: rune(end)}
+		b := block{name: strings.TrimSpace(name), start: rune(start), end: rune(end)}
 		for r := b.start; r <= b.end; r++ {
 			if !unicode.Is(unicode.Cn, r) && !unicode.Is(unicode.Cs, r) && !unicode.Is(unicode.Co, r) {
 				b.total++
