@@ -398,6 +398,11 @@ func checkStore(path string, faces []fonts.Face) error {
 		if entry != faces[i].Entry {
 			return fmt.Errorf("font index entry mismatch")
 		}
+		for _, name := range faces[i].Names {
+			if name.ID == 1 && name.Decoded && name.Value != "" && entry.Family == "" {
+				return fmt.Errorf("font index family name is empty")
+			}
+		}
 	}
 	selected, err := fonts.ReadFace(path, face.Index)
 	if err != nil || selected.Entry != face.Entry || !slices.Equal(selected.Characters, face.Characters) || len(selected.Names) != len(face.Names) {
@@ -1384,7 +1389,15 @@ func (a *appState) browser(c *ui.Context) {
 		if a.sortMode == 0 {
 			sortTitle += " · 默认"
 		}
-		columns := []ui.TableColumn{{Title: "对比", Width: 52}, {Title: sortTitle, ID: "name", Sortable: true}, {Title: "预览", Width: 220}}
+		nameWidth := max(120, (a.centerWidth-32-52-220)*2/3)
+		previewWidth := a.centerWidth - 32 - 52 - nameWidth
+		if width, ok := a.table.Columns.Widths["name"]; ok {
+			previewWidth = a.centerWidth - 32 - 52 - width
+		}
+		if width, ok := a.table.Columns.Widths["preview"]; ok {
+			previewWidth = width
+		}
+		columns := []ui.TableColumn{{Title: "对比", Width: 52}, {Title: sortTitle, ID: "name", Width: nameWidth, Sortable: true}, {Title: "预览（Family Name）", ID: "preview"}}
 		if ui.Table(c, &a.table, columns, len(a.rows), func(row, column int) {
 			face := a.rows[row]
 			if column == 0 {
@@ -1402,8 +1415,10 @@ func (a *appState) browser(c *ui.Context) {
 				}
 			} else if column == 1 {
 				ui.Text(c, face.FullName).SingleLine().Padding(8, 4)
+			} else if face.Family == "" {
+				ui.Text(c, "Family Name 未提供").TextColor(c.Theme().TextMuted).SingleLine()
 			} else {
-				a.previewTextView(c, face, strings.SplitN(a.previewText, "\n", 2)[0], a.previewSize, 200, 44)
+				a.previewTextView(c, face, face.Family, a.previewSize, max(1, int(previewWidth)-12), 44)
 			}
 		}).Grow(1).Changed() {
 			if a.selectedRow >= 0 && a.selectedRow < len(a.rows) {

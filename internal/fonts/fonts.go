@@ -57,13 +57,13 @@ type Entry struct {
 	Count    int
 	Format   string
 	FullName string
+	Family   string
 }
 
 func (f Entry) ID() string { return fmt.Sprintf("%s#%d", strings.ToLower(f.Path), f.Index) }
 
 type Face struct {
 	Entry
-	Family     string
 	Subfamily  string
 	PostScript string
 	Names      []NameRecord
@@ -161,6 +161,7 @@ func read(path string, selected int, indexOnly bool) ([]Face, error) {
 		if data, readErr := loader.RawTable(opentype.MustNewTag("name")); readErr == nil {
 			names = readNames(data)
 			face.FullName = preferredName(names, 4)
+			face.Family = preferredName(names, 1)
 		}
 		if face.FullName == "" {
 			face.FullName = fmt.Sprintf("名称未提供 · %s · 面 %d", filepath.Base(path), index+1)
@@ -185,7 +186,6 @@ func read(path string, selected int, indexOnly bool) ([]Face, error) {
 		}
 		face.Properties = readProperties(loader)
 		face.Names = names
-		face.Family = preferredName(names, 1)
 		face.Subfamily = preferredName(names, 2)
 		face.PostScript = preferredName(names, 6)
 		if data, readErr := loader.RawTable(opentype.MustNewTag("maxp")); readErr == nil {
