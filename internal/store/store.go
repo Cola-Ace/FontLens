@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const version = 4
+const version = 5
 
 type Store struct{ db *sql.DB }
 

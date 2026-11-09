@@ -194,6 +194,9 @@ func selfCheck(fontPath, sample string) error {
 	if result.Charsets[0].Total != 6763 || result.Charsets[1].Total != 20923 {
 		return fmt.Errorf("charset denominator mismatch")
 	}
+	if !result.Charsets[2].Pending || result.Charsets[2].Total != 0 {
+		return fmt.Errorf("pending charset status mismatch")
+	}
 	foundBlock := false
 	for _, row := range result.Blocks {
 		if row.Name == "CJK Unified Ideographs" {
@@ -1042,6 +1045,10 @@ func (a *appState) coverageList(c *ui.Context, title string, rows []coverage.Row
 func coverageRow(c *ui.Context, row coverage.Row) {
 	ui.Column(c).Padding(8, 4).Gap(2).Children(func() {
 		ui.Text(c, row.Name).SingleLine()
+		if row.Pending {
+			ui.Text(c, "待导入 · 使用上方按钮导入有版本的 UTF-8 字表").TextColor(c.Theme().TextMuted)
+			return
+		}
 		ui.Textf(c, "%d / %d · %.2f%% · 缺 %d", row.Covered, row.Total, row.Percent, row.Missing).TextColor(c.Theme().TextMuted)
 	})
 }

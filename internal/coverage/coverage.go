@@ -24,6 +24,7 @@ type Row struct {
 	Total   int
 	Missing int
 	Percent float64
+	Pending bool
 }
 
 type Result struct {
@@ -124,6 +125,10 @@ func Builtin(characters map[rune]struct{}) []Row {
 	return []Row{
 		measure("GB2312 汉字集", gb2312, characters),
 		measure("GBK 汉字集", gbk, characters),
+		{Name: "GB18030 分级字表（版本与等级待导入）", Pending: true},
+		{Name: "通用规范汉字表（版本待导入）", Pending: true},
+		{Name: "Big5 / HKSCS 字表（版本待导入）", Pending: true},
+		{Name: "日韩字表（版本待导入）", Pending: true},
 	}
 }
 
