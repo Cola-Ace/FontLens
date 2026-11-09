@@ -291,9 +291,6 @@ func readNames(data []byte) []NameRecord {
 		record := data[6+i*12:]
 		start := base + int(binary.BigEndian.Uint16(record[10:12]))
 		length := int(binary.BigEndian.Uint16(record[8:10]))
-		if start < 0 || length < 0 || start > len(data) || length > len(data)-start {
-			continue
-		}
 		name := NameRecord{
 			Platform: binary.BigEndian.Uint16(record[0:2]),
 			Encoding: binary.BigEndian.Uint16(record[2:4]),
@@ -302,6 +299,11 @@ func readNames(data []byte) []NameRecord {
 		}
 		if name.Language >= 0x8000 && int(name.Language-0x8000) < len(languageTags) {
 			name.LanguageTag = languageTags[name.Language-0x8000]
+		}
+		if start > len(data) || length > len(data)-start {
+			name.Value = "解析失败 · 字符串偏移或长度超出 name 表"
+			result = append(result, name)
+			continue
 		}
 		raw := data[start : start+length]
 		if name.Platform == 0 || name.Platform == 3 {
