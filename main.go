@@ -136,6 +136,9 @@ func main() {
 		return
 	}
 	app := &appState{leftWidth: 208, centerWidth: 800, coverageSplit: 50, licenseSplit: 25, licenseName: "LICENSE", scope: "all", selectedRow: -1, previewText: "FontLens 123", previewPreset: "自定义", previewSize: 26, previewLineHeight: 1.4}
+	app.sortMode = 1
+	app.tableSort = ui.SortOrder{Column: "name"}
+	app.sortSeen = app.tableSort
 	app.tree.Open.Add("all")
 	app.tree.Open.Add("custom")
 	app.loadSettings()
@@ -1357,6 +1360,7 @@ func (a *appState) browser(c *ui.Context) {
 		}
 		a.sortSeen = a.tableSort
 		a.rebuild()
+		a.table.ScrollTo(0, ui.Start)
 	}
 	ui.Column(c).Fill().Padding(16).Gap(12).Children(func() {
 		ui.Row(c).Gap(8).Children(func() {
@@ -1387,7 +1391,7 @@ func (a *appState) browser(c *ui.Context) {
 		a.table.Key = func(row int) any { return a.rows[row].ID() }
 		sortTitle := "Name（字体名称）"
 		if a.sortMode == 0 {
-			sortTitle += " · 默认"
+			sortTitle += " · 原始顺序"
 		}
 		nameWidth := max(120, (a.centerWidth-32-52-220)*2/3)
 		previewWidth := a.centerWidth - 32 - 52 - nameWidth
