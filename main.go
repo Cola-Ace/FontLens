@@ -31,6 +31,8 @@ var embeddedDocs embed.FS
 
 type settings struct {
 	Sources         []string              `json:"sources"`
+	Scope           string                `json:"scope"`
+	Open            []string              `json:"open"`
 	Charsets        []coverage.Definition `json:"charsets"`
 	CharsetRevision int64                 `json:"charsetRevision"`
 }
@@ -131,6 +133,7 @@ func main() {
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
 	}
+	app.saveSettings()
 	if app.store != nil {
 		app.store.Close()
 	}
@@ -299,6 +302,15 @@ func (a *appState) loadSettings() {
 	var saved settings
 	if json.Unmarshal(data, &saved) == nil {
 		a.sources = saved.Sources
+		if saved.Scope != "" {
+			a.scope = saved.Scope
+		}
+		if saved.Open != nil {
+			a.tree.Open.Clear()
+			for _, node := range saved.Open {
+				a.tree.Open.Add(node)
+			}
+		}
 		a.charsets = saved.Charsets
 		a.charsetRevision = saved.CharsetRevision
 	}
@@ -312,7 +324,12 @@ func (a *appState) saveSettings() {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return
 	}
-	data, err := json.MarshalIndent(settings{Sources: a.sources, Charsets: a.charsets, CharsetRevision: a.charsetRevision}, "", "  ")
+	open := make([]string, 0, a.tree.Open.Len())
+	for node := range a.tree.Open.All() {
+		open = append(open, node)
+	}
+	slices.Sort(open)
+	data, err := json.MarshalIndent(settings{Sources: a.sources, Scope: a.scope, Open: open, Charsets: a.charsets, CharsetRevision: a.charsetRevision}, "", "  ")
 	if err == nil {
 		_ = os.WriteFile(path, data, 0600)
 	}
@@ -867,6 +884,12 @@ func (a *appState) sidebar(c *ui.Context) {
 	ui.Column(c).Fill().Padding(16).Gap(12).Children(func() {
 		ui.Text(c, "字镜").FontSize(24).Bold()
 		ui.Text(c, "字体目录").TextColor(c.Theme().TextMuted)
+		for row := 0; row < a.tree.Rows(); row++ {
+			if a.tree.Item(row) == a.scope {
+				a.treeRow = row
+				break
+			}
+		}
 		a.tree.List.Selected = &a.treeRow
 		if ui.Outline(c, &a.tree, []string{"all"}, func(node string) []string {
 			switch node {
@@ -893,6 +916,7 @@ func (a *appState) sidebar(c *ui.Context) {
 		}).Grow(1).Changed() {
 			a.scope = a.tree.Item(a.treeRow)
 			a.rebuild()
+			a.saveSettings()
 		}
 		ui.TextInput(c, &a.folderInput).Placeholder("路径，或直接点击添加").Label("要添加的字体文件夹")
 		if ui.Button(c, "添加文件夹").Clicked() {

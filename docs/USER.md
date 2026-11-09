@@ -26,4 +26,4 @@
 
 ## 本地数据
 
-字体文件只被读取。来源设置保存在 `%LocalAppData%\FontLens\settings.json`，字体索引与覆盖缓存保存在同目录的 `index.db`。浏览和统计无需网络连接。
+字体文件只被读取。来源、当前目录、目录展开状态和导入字表保存在 `%LocalAppData%\FontLens\settings.json`，字体索引与覆盖缓存保存在同目录的 `index.db`。浏览和统计无需网络连接。
