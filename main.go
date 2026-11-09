@@ -35,6 +35,7 @@ type settings struct {
 	Open            []string              `json:"open"`
 	Charsets        []coverage.Definition `json:"charsets"`
 	CharsetRevision int64                 `json:"charsetRevision"`
+	ThemeMode       int                   `json:"themeMode"`
 }
 
 type appState struct {
@@ -50,6 +51,7 @@ type appState struct {
 	charsets         []coverage.Definition
 	charsetRevision  int64
 	charsetMessage   string
+	themeMode        int
 	folderInput      string
 	scope            string
 	query            string
@@ -125,7 +127,7 @@ func main() {
 	}
 	mygo.App.WhenReady(func() {
 		app.window = mygo.NewWindow(mygo.WindowOptions{
-			Title: "字镜 · FontLens", Width: 1440, Height: 900, StateKey: "main",
+			Title: "字镜 · FontLens", Width: 1440, Height: 900, MinWidth: 1024, MinHeight: 720, StateKey: "main",
 			Content: ui.View(app.view),
 		})
 		app.refresh()
@@ -313,6 +315,9 @@ func (a *appState) loadSettings() {
 		}
 		a.charsets = saved.Charsets
 		a.charsetRevision = saved.CharsetRevision
+		if saved.ThemeMode >= 0 && saved.ThemeMode <= 2 {
+			a.themeMode = saved.ThemeMode
+		}
 	}
 }
 
@@ -329,7 +334,7 @@ func (a *appState) saveSettings() {
 		open = append(open, node)
 	}
 	slices.Sort(open)
-	data, err := json.MarshalIndent(settings{Sources: a.sources, Scope: a.scope, Open: open, Charsets: a.charsets, CharsetRevision: a.charsetRevision}, "", "  ")
+	data, err := json.MarshalIndent(settings{Sources: a.sources, Scope: a.scope, Open: open, Charsets: a.charsets, CharsetRevision: a.charsetRevision, ThemeMode: a.themeMode}, "", "  ")
 	if err == nil {
 		_ = os.WriteFile(path, data, 0600)
 	}
@@ -525,6 +530,12 @@ func (a *appState) count(scope string) int {
 }
 
 func (a *appState) view(c *ui.Context) {
+	switch a.themeMode {
+	case 1:
+		c.SetTheme(ui.LightTheme())
+	case 2:
+		c.SetTheme(ui.DarkTheme())
+	}
 	if a.about {
 		a.aboutView(c)
 		return
@@ -540,6 +551,11 @@ func (a *appState) view(c *ui.Context) {
 	if a.coveragePage {
 		a.coverageView(c)
 		return
+	}
+	width, _ := c.Size()
+	if width >= 1024 {
+		a.leftWidth = min(a.leftWidth, width-800)
+		a.centerWidth = min(a.centerWidth, width-a.leftWidth-320)
 	}
 	ui.Split(c, &a.leftWidth, func() { a.sidebar(c) }, func() {
 		ui.Split(c, &a.centerWidth, func() { a.browser(c) }, func() { a.details(c) }).Fill()
@@ -955,6 +971,11 @@ func (a *appState) sidebar(c *ui.Context) {
 		}
 		if ui.Button(c, "说明与许可证").Clicked() {
 			a.about = true
+		}
+		themes := []string{"跟随系统", "浅色", "深色"}
+		if ui.Button(c, "主题："+themes[a.themeMode]).Clicked() {
+			a.themeMode = (a.themeMode + 1) % len(themes)
+			a.saveSettings()
 		}
 	})
 }
