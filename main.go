@@ -1429,10 +1429,8 @@ func (a *appState) details(c *ui.Context) {
 			ui.Text(c, face.Path)
 			ui.Textf(c, "面 %d / %d · %s", face.Index+1, face.Count, face.Format)
 			ui.Textf(c, "文件大小 %d bytes · 文件修改 %s", face.Size, time.Unix(0, face.Modified).Local().Format("2006-01-02 15:04:05"))
-			ui.Text(c, "字体大样").Bold()
-			a.previewView(c, face, a.previewSize*1.5, 380, 260)
 			ui.Divider(c)
-			ui.Textf(c, "Family: %s", face.Family)
+			ui.Textf(c, "Family Name: %s", face.Family)
 			ui.Textf(c, "Subfamily: %s", face.Subfamily)
 			ui.Textf(c, "PostScript: %s", face.PostScript)
 			ui.Textf(c, "字形数: %d · Unicode 映射码位: %d", face.Glyphs, len(face.Characters))
@@ -1530,13 +1528,11 @@ func (a *appState) details(c *ui.Context) {
 				if a.coverageMode == 1 {
 					rows = result.Blocks
 				}
-				filtered := make([]coverage.Row, 0, len(rows))
 				for _, row := range rows {
 					if strings.Contains(strings.ToLower(row.Name), strings.ToLower(a.coverageQuery)) {
-						filtered = append(filtered, row)
+						coverageRow(c, row)
 					}
 				}
-				ui.List(c, nil, len(filtered), func(index int) { coverageRow(c, filtered[index]) }).Height(220)
 			} else {
 				ui.Text(c, "正在计算覆盖统计…")
 			}
