@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +22,7 @@ import (
 	"github.com/go-text/typesetting/font"
 	"github.com/go-text/typesetting/font/opentype"
 	"github.com/go-text/typesetting/shaping"
+	"golang.org/x/image/draw"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -30,8 +32,8 @@ func (f oneFace) ResolveFace(r rune) *font.Face { return f.face }
 
 var renderSlots = make(chan struct{}, 1)
 
-func Render(ctx context.Context, path string, faceIndex int, axes map[string]float32, sample string, size, lineHeight float32, width, height int, ink color.RGBA) (*image.RGBA, error) {
-	if width <= 0 || height <= 0 || size <= 0 {
+func Render(ctx context.Context, path string, faceIndex int, axes map[string]float32, sample string, size, lineHeight float32, width, height int, scale float32, ink color.RGBA) (*image.RGBA, error) {
+	if width <= 0 || height <= 0 || size <= 0 || scale <= 0 {
 		return nil, fmt.Errorf("invalid preview dimensions")
 	}
 	// Each render parses font outlines; bound concurrent copies of large fonts.
@@ -158,7 +160,11 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 	}
 	var segmenter shaping.Segmenter
 	var shaper shaping.HarfbuzzShaper
-	result := image.NewRGBA(image.Rect(0, 0, width, height))
+	pixelWidth := int(math.Ceil(float64(float32(width) * scale)))
+	pixelHeight := int(math.Ceil(float64(float32(height) * scale)))
+	// Sample outlines at twice the screen resolution, then average coverage.
+	result := image.NewRGBA(image.Rect(0, 0, pixelWidth*2, pixelHeight*2))
+	transform := directwrite.DWRITE_MATRIX{M11: scale * 2, M22: scale * 2}
 	lineIndex := 0
 	for _, paragraph := range strings.Split(sample, "\n") {
 		runes := []rune(paragraph)
@@ -197,7 +203,7 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 				}
 				glyphRun := directwrite.DWRITE_GLYPH_RUN{FontFace: dwFace, FontEmSize: size, GlyphCount: uint32(len(ids)), GlyphIndices: &ids[0], GlyphAdvances: &advances[0], GlyphOffsets: &offsets[0]}
 				var analysis *directwrite.IDWriteGlyphRunAnalysis
-				if err := factory2.CreateGlyphRunAnalysis(&glyphRun, nil, directwrite.DWRITE_RENDERING_MODE_NATURAL, directwrite.DWRITE_MEASURING_MODE_NATURAL, directwrite.DWRITE_GRID_FIT_MODE_DEFAULT, directwrite.DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE, penX, baseline, &analysis); err != nil {
+				if err := factory2.CreateGlyphRunAnalysis(&glyphRun, &transform, directwrite.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, directwrite.DWRITE_MEASURING_MODE_NATURAL, directwrite.DWRITE_GRID_FIT_MODE_DISABLED, directwrite.DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE, penX, baseline, &analysis); err != nil {
 					return nil, err
 				}
 				var bounds foundation.RECT
@@ -223,7 +229,9 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 			lineIndex++
 		}
 	}
-	return result, nil
+	bitmap := image.NewRGBA(image.Rect(0, 0, pixelWidth, pixelHeight))
+	draw.BiLinear.Scale(bitmap, bitmap.Bounds(), result, result.Bounds(), draw.Src, nil)
+	return bitmap, nil
 }
 
 func paint(dst *image.RGBA, bounds foundation.RECT, alpha []byte, ink color.RGBA) {

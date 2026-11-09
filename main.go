@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image/color"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +22,8 @@ import (
 	"fontlens/internal/fonts"
 	"fontlens/internal/preview"
 	"fontlens/internal/store"
+	"github.com/deploymenttheory/go-bindings-win32/bindings/win32/foundation"
+	"github.com/deploymenttheory/go-bindings-win32/bindings/win32/ui/hidpi"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
@@ -337,34 +340,39 @@ func checkFont(path, sample string) error {
 		}
 		break
 	}
-	bitmap, err := preview.Render(context.Background(), path, 0, nil, sample, 28, 1.4, 260, 52, color.RGBA{R: 35, G: 39, B: 46, A: 255})
+	bitmap, err := preview.Render(context.Background(), path, 0, nil, sample, 28, 1.4, 260, 52, 1, color.RGBA{R: 35, G: 39, B: 46, A: 255})
 	if err != nil {
 		return fmt.Errorf("DirectWrite preview: %w", err)
 	}
-	wrapped, err := preview.Render(context.Background(), path, 0, nil, strings.Repeat(sample+" ", 8), 28, 1.4, 260, 150, color.RGBA{R: 35, G: 39, B: 46, A: 255})
-	if err != nil {
-		return fmt.Errorf("wrapped preview: %w", err)
-	}
-	secondLine := false
-	for y := 65; y < wrapped.Rect.Dy(); y++ {
-		for x := 0; x < wrapped.Rect.Dx(); x++ {
-			if wrapped.RGBAAt(x, y).A != 0 {
-				secondLine = true
-				break
+	for _, scale := range []float32{1, 1.25, 1.5, 2} {
+		wrapped, err := preview.Render(context.Background(), path, 0, nil, strings.Repeat(sample+" ", 8), 28, 1.4, 260, 150, scale, color.RGBA{R: 35, G: 39, B: 46, A: 255})
+		if err != nil {
+			return fmt.Errorf("wrapped preview at %g×: %w", scale, err)
+		}
+		if wrapped.Rect.Dx() != int(math.Ceil(float64(260*scale))) || wrapped.Rect.Dy() != int(math.Ceil(float64(150*scale))) {
+			return fmt.Errorf("preview pixel dimensions at %g× mismatch", scale)
+		}
+		secondLine, antialiased := false, false
+		for y := 0; y < wrapped.Rect.Dy(); y++ {
+			for x := 0; x < wrapped.Rect.Dx(); x++ {
+				alpha := wrapped.RGBAAt(x, y).A
+				if alpha > 0 && y >= int(65*scale) {
+					secondLine = true
+				}
+				if alpha > 0 && alpha < 255 {
+					antialiased = true
+				}
 			}
 		}
-		if secondLine {
-			break
+		if !secondLine || !antialiased {
+			return fmt.Errorf("preview at %g×: second line=%t, antialiasing=%t", scale, secondLine, antialiased)
 		}
-	}
-	if !secondLine {
-		return fmt.Errorf("wrapped preview has no second line")
 	}
 	for _, axis := range faces[0].Axes {
 		if axis.Minimum == axis.Maximum {
 			continue
 		}
-		other, renderErr := preview.Render(context.Background(), path, 0, map[string]float32{axis.Tag: axis.Maximum}, sample, 28, 1.4, 260, 52, color.RGBA{R: 35, G: 39, B: 46, A: 255})
+		other, renderErr := preview.Render(context.Background(), path, 0, map[string]float32{axis.Tag: axis.Maximum}, sample, 28, 1.4, 260, 52, 1, color.RGBA{R: 35, G: 39, B: 46, A: 255})
 		if renderErr != nil {
 			return fmt.Errorf("variable preview: %w", renderErr)
 		}
@@ -917,8 +925,8 @@ func (a *appState) coverageCacheKey(face fonts.Entry) string {
 	return fmt.Sprintf("%s:charsets:%d", coverageKey(face), a.charsetRevision)
 }
 
-func (a *appState) previewKey(face fonts.Entry, sample string, size float32, width, height int, ink color.RGBA) string {
-	key := fmt.Sprintf("%s:%g:%g:%d:%d:%d:%d:%d:%s", coverageKey(face), size, a.previewLineHeight, width, height, ink.R, ink.G, ink.B, sample)
+func (a *appState) previewKey(face fonts.Entry, sample string, size float32, width, height int, scale float32, ink color.RGBA) string {
+	key := fmt.Sprintf("%s:%g:%g:%d:%d:%g:%d:%d:%d:%s", coverageKey(face), size, a.previewLineHeight, width, height, scale, ink.R, ink.G, ink.B, sample)
 	axes := a.axisValues[face.ID()]
 	tags := make([]string, 0, len(axes))
 	for tag := range axes {
@@ -931,13 +939,13 @@ func (a *appState) previewKey(face fonts.Entry, sample string, size float32, wid
 	return key
 }
 
-func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, width, height int, ink color.RGBA) string {
+func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, width, height int, scale float32, ink color.RGBA) string {
 	if a.previewCache == nil {
 		a.previewCache = make(map[string]*ui.Bitmap)
 		a.previewLoading = make(map[string]bool)
 		a.previewErrors = make(map[string]string)
 	}
-	key := a.previewKey(face, sample, size, width, height, ink)
+	key := a.previewKey(face, sample, size, width, height, scale, ink)
 	if a.previewCache[key] != nil || a.previewLoading[key] || a.previewErrors[key] != "" {
 		return key
 	}
@@ -948,7 +956,7 @@ func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, 
 		axes[tag] = float32(value)
 	}
 	go func() {
-		bitmap, err := preview.Render(context.Background(), face.Path, face.Index, axes, sample, size, lineHeight, width, height, ink)
+		bitmap, err := preview.Render(context.Background(), face.Path, face.Index, axes, sample, size, lineHeight, width, height, scale, ink)
 		a.window.Update(func() {
 			delete(a.previewLoading, key)
 			if err != nil {
@@ -970,7 +978,8 @@ func (a *appState) previewView(c *ui.Context, face fonts.Entry, size float32, wi
 
 func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) {
 	textColor := c.Theme().Text
-	key := a.ensurePreview(face, sample, size, width, height, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
+	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
+	key := a.ensurePreview(face, sample, size, width, height, scale, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
 	slot := fmt.Sprintf("%s:%d:%d:%d:%d:%d", face.ID(), width, height, textColor.R, textColor.G, textColor.B)
 	if bitmap := a.previewCache[key]; bitmap != nil {
 		if a.previewLast == nil || len(a.previewLast) >= 400 {
