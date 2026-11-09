@@ -58,6 +58,8 @@ type appState struct {
 	scope             string
 	query             string
 	sortMode          int
+	tableSort         ui.SortOrder
+	sortSeen          ui.SortOrder
 	faces             []fonts.Face
 	faceIndex         map[string]int
 	systemIDs         map[string]bool
@@ -1275,6 +1277,19 @@ func (a *appState) addFolder(input string) {
 }
 
 func (a *appState) browser(c *ui.Context) {
+	if a.tableSort != a.sortSeen {
+		a.sortMode = (a.sortMode + 1) % 3
+		switch a.sortMode {
+		case 1:
+			a.tableSort = ui.SortOrder{Column: "name"}
+		case 2:
+			a.tableSort = ui.SortOrder{Column: "name", Descending: true}
+		default:
+			a.tableSort = ui.SortOrder{}
+		}
+		a.sortSeen = a.tableSort
+		a.rebuild()
+	}
 	ui.Column(c).Fill().Padding(16).Gap(12).Children(func() {
 		ui.Row(c).Gap(8).Children(func() {
 			if ui.SearchField(c, &a.query).Placeholder("搜索字体全名").Grow(1).Changed() {
@@ -1282,11 +1297,6 @@ func (a *appState) browser(c *ui.Context) {
 			}
 			if ui.Button(c, fmt.Sprintf("对比 (%d)", len(a.compareIDs))).Clicked() && len(a.compareIDs) >= 2 {
 				a.comparePage = true
-			}
-			labels := []string{"默认排序", "名称 ↑", "名称 ↓"}
-			if ui.Button(c, labels[a.sortMode]).Clicked() {
-				a.sortMode = (a.sortMode + 1) % 3
-				a.rebuild()
 			}
 			formats := []string{"", "TTF", "OTF", "TTC", "OTC", "WOFF", "WOFF2"}
 			filterLabel := "全部格式"
@@ -1305,8 +1315,13 @@ func (a *appState) browser(c *ui.Context) {
 		a.previewToolbar(c)
 		ui.Textf(c, "%d / %d 个字体面", len(a.rows), a.count(a.scope)).TextColor(c.Theme().TextMuted)
 		a.table.Selected = &a.selectedRow
+		a.table.Sort = &a.tableSort
 		a.table.Key = func(row int) any { return a.rows[row].ID() }
-		columns := []ui.TableColumn{{Title: "对比", Width: 52}, {Title: "Name（字体名称）"}, {Title: "预览", Width: 220}}
+		sortTitle := "Name（字体名称）"
+		if a.sortMode == 0 {
+			sortTitle += " · 默认"
+		}
+		columns := []ui.TableColumn{{Title: "对比", Width: 52}, {Title: sortTitle, ID: "name", Sortable: true}, {Title: "预览", Width: 220}}
 		if ui.Table(c, &a.table, columns, len(a.rows), func(row, column int) {
 			face := a.rows[row]
 			if column == 0 {
