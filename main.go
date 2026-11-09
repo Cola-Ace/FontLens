@@ -28,7 +28,7 @@ import (
 	"golang.org/x/text/language"
 )
 
-//go:embed docs/USER.md LICENSE third_party/licenses/*
+//go:embed docs/USER.md docs/PREVIEW_TEXTS.md LICENSE third_party/licenses/*
 var embeddedDocs embed.FS
 
 type settings struct {
@@ -41,69 +41,72 @@ type settings struct {
 }
 
 type appState struct {
-	window           *mygo.Window
-	tree             ui.OutlineState[string]
-	treeRow          int
-	table            ui.ListState
-	selectedRow      int
-	selectedID       string
-	leftWidth        float32
-	centerWidth      float32
-	sources          []string
-	charsets         []coverage.Definition
-	charsetRevision  int64
-	charsetMessage   string
-	themeMode        int
-	folderInput      string
-	scope            string
-	query            string
-	sortMode         int
-	faces            []fonts.Face
-	faceIndex        map[string]int
-	systemIDs        map[string]bool
-	scopeCounts      map[string]int
-	rows             []fonts.Face
-	dirs             map[string][]string
-	errors           []string
-	scanning         bool
-	cancelScan       context.CancelFunc
-	scanID           int
-	showErrors       bool
-	format           string
-	about            bool
-	markdown         markdown.Options
-	noticesMarkdown  markdown.Options
-	coverageCache    map[string]coverage.Result
-	coverageLoading  map[string]bool
-	coveragePage     bool
-	coverageMode     int
-	coverageQuery    string
-	coverageSplit    float32
-	previewText      string
-	previewSize      float32
-	previewCache     map[string]*ui.Bitmap
-	previewLoading   map[string]bool
-	previewErrors    map[string]string
-	compareIDs       []string
-	comparePage      bool
-	compareLimit     bool
-	rawViewOpen      bool
-	rawFace          fonts.Face
-	rawTag           string
-	rawData          []byte
-	rawError         string
-	rawPage          int
-	store            *store.Store
-	aboutTab         int
-	licenseName      string
-	licenseSplit     float32
-	axisValues       map[string]map[string]float64
-	selectedInstance map[string]string
-	detailsQuery     string
-	glyphInput       string
-	glyphOutput      string
-	glyphFaceID      string
-	glyphCharacter   string
+	window            *mygo.Window
+	tree              ui.OutlineState[string]
+	treeRow           int
+	table             ui.ListState
+	selectedRow       int
+	selectedID        string
+	leftWidth         float32
+	centerWidth       float32
+	sources           []string
+	charsets          []coverage.Definition
+	charsetRevision   int64
+	charsetMessage    string
+	themeMode         int
+	folderInput       string
+	scope             string
+	query             string
+	sortMode          int
+	faces             []fonts.Face
+	faceIndex         map[string]int
+	systemIDs         map[string]bool
+	scopeCounts       map[string]int
+	rows              []fonts.Face
+	dirs              map[string][]string
+	errors            []string
+	scanning          bool
+	cancelScan        context.CancelFunc
+	scanID            int
+	showErrors        bool
+	format            string
+	about             bool
+	markdown          markdown.Options
+	presetMarkdown    markdown.Options
+	noticesMarkdown   markdown.Options
+	coverageCache     map[string]coverage.Result
+	coverageLoading   map[string]bool
+	coveragePage      bool
+	coverageMode      int
+	coverageQuery     string
+	coverageSplit     float32
+	previewText       string
+	previewPreset     string
+	previewSize       float32
+	previewLineHeight float32
+	previewCache      map[string]*ui.Bitmap
+	previewLoading    map[string]bool
+	previewErrors     map[string]string
+	compareIDs        []string
+	comparePage       bool
+	compareLimit      bool
+	rawViewOpen       bool
+	rawFace           fonts.Face
+	rawTag            string
+	rawData           []byte
+	rawError          string
+	rawPage           int
+	store             *store.Store
+	aboutTab          int
+	licenseName       string
+	licenseSplit      float32
+	axisValues        map[string]map[string]float64
+	selectedInstance  map[string]string
+	detailsQuery      string
+	glyphInput        string
+	glyphOutput       string
+	glyphFaceID       string
+	glyphCharacter    string
 }
 
 func main() {
@@ -126,7 +129,7 @@ func main() {
 		fmt.Println("FontLens self-check passed")
 		return
 	}
-	app := &appState{leftWidth: 208, centerWidth: 800, coverageSplit: 50, licenseSplit: 25, licenseName: "LICENSE", scope: "all", selectedRow: -1, previewText: "FontLens 123", previewSize: 26}
+	app := &appState{leftWidth: 208, centerWidth: 800, coverageSplit: 50, licenseSplit: 25, licenseName: "LICENSE", scope: "all", selectedRow: -1, previewText: "FontLens 123", previewPreset: "自定义", previewSize: 26, previewLineHeight: 1.4}
 	app.tree.Open.Add("all")
 	app.tree.Open.Add("custom")
 	app.loadSettings()
@@ -322,15 +325,34 @@ func checkFont(path, sample string) error {
 		}
 		break
 	}
-	bitmap, err := preview.Render(context.Background(), path, 0, nil, sample, 28, 260, 52, color.RGBA{R: 35, G: 39, B: 46, A: 255})
+	bitmap, err := preview.Render(context.Background(), path, 0, nil, sample, 28, 1.4, 260, 52, color.RGBA{R: 35, G: 39, B: 46, A: 255})
 	if err != nil {
 		return fmt.Errorf("DirectWrite preview: %w", err)
+	}
+	wrapped, err := preview.Render(context.Background(), path, 0, nil, strings.Repeat(sample+" ", 8), 28, 1.4, 260, 150, color.RGBA{R: 35, G: 39, B: 46, A: 255})
+	if err != nil {
+		return fmt.Errorf("wrapped preview: %w", err)
+	}
+	secondLine := false
+	for y := 65; y < wrapped.Rect.Dy(); y++ {
+		for x := 0; x < wrapped.Rect.Dx(); x++ {
+			if wrapped.RGBAAt(x, y).A != 0 {
+				secondLine = true
+				break
+			}
+		}
+		if secondLine {
+			break
+		}
+	}
+	if !secondLine {
+		return fmt.Errorf("wrapped preview has no second line")
 	}
 	for _, axis := range faces[0].Axes {
 		if axis.Minimum == axis.Maximum {
 			continue
 		}
-		other, renderErr := preview.Render(context.Background(), path, 0, map[string]float32{axis.Tag: axis.Maximum}, sample, 28, 260, 52, color.RGBA{R: 35, G: 39, B: 46, A: 255})
+		other, renderErr := preview.Render(context.Background(), path, 0, map[string]float32{axis.Tag: axis.Maximum}, sample, 28, 1.4, 260, 52, color.RGBA{R: 35, G: 39, B: 46, A: 255})
 		if renderErr != nil {
 			return fmt.Errorf("variable preview: %w", renderErr)
 		}
@@ -796,22 +818,7 @@ func (a *appState) compareView(c *ui.Context) {
 			}
 			ui.Textf(c, "字体对比 · %d 款", len(faces)).FontSize(22).Bold()
 		})
-		ui.Row(c).Gap(8).Children(func() {
-			ui.TextInput(c, &a.previewText).Placeholder("对比文案").Grow(1)
-			if ui.Button(c, "中文").Clicked() {
-				a.previewText = "字镜之美 123"
-			}
-			if ui.Button(c, "英文").Clicked() {
-				a.previewText = "FontLens 123"
-			}
-			if ui.Button(c, "字号 −").Clicked() && a.previewSize > 14 {
-				a.previewSize -= 2
-			}
-			ui.Textf(c, "%.0f px", a.previewSize)
-			if ui.Button(c, "字号 +").Clicked() && a.previewSize < 48 {
-				a.previewSize += 2
-			}
-		})
+		a.previewToolbar(c)
 		ui.Scroll(c).Grow(1).Children(func() {
 			for start := 0; start < len(faces); start += 2 {
 				end := min(start+2, len(faces))
@@ -825,12 +832,48 @@ func (a *appState) compareView(c *ui.Context) {
 								}
 							})
 							ui.Textf(c, "%s · 面 %d", face.Path, face.Index+1).SingleLine().TextColor(c.Theme().TextMuted)
-							a.previewView(c, face, a.previewSize*2, 450, 180)
+							a.previewView(c, face, a.previewSize*1.5, 450, 240)
 						}).Border(1, c.Theme().Border).Radius(8)
 					}
 				})
 			}
 		})
+	})
+}
+
+func (a *appState) previewToolbar(c *ui.Context) {
+	ui.Row(c).Gap(8).Children(func() {
+		if ui.TextArea(c, &a.previewText).Placeholder("输入多行预览文案").Height(68).Grow(1).Changed() {
+			a.previewPreset = "自定义"
+		}
+		labels := []string{"自定义"}
+		for _, preset := range preview.Presets {
+			labels = append(labels, preset.Label)
+		}
+		if ui.Select(c, &a.previewPreset, labels).Changed() {
+			for _, preset := range preview.Presets {
+				if preset.Label == a.previewPreset {
+					a.previewText = preset.Text
+					break
+				}
+			}
+		}
+	})
+	ui.Row(c).Gap(8).Children(func() {
+		if ui.Button(c, "字号 −").Clicked() && a.previewSize > 14 {
+			a.previewSize -= 2
+		}
+		ui.Textf(c, "%.0f px", a.previewSize)
+		if ui.Button(c, "字号 +").Clicked() && a.previewSize < 48 {
+			a.previewSize += 2
+		}
+		if ui.Button(c, "行距 −").Clicked() {
+			a.previewLineHeight = max(1.0, a.previewLineHeight-0.1)
+		}
+		ui.Textf(c, "行距 %.1f×", a.previewLineHeight)
+		if ui.Button(c, "行距 +").Clicked() {
+			a.previewLineHeight = min(2.0, a.previewLineHeight+0.1)
+		}
 	})
 }
 
@@ -843,7 +886,7 @@ func (a *appState) coverageCacheKey(face fonts.Face) string {
 }
 
 func (a *appState) previewKey(face fonts.Face, sample string, size float32, width, height int, ink color.RGBA) string {
-	key := fmt.Sprintf("%s:%g:%d:%d:%d:%d:%d:%s", coverageKey(face), size, width, height, ink.R, ink.G, ink.B, sample)
+	key := fmt.Sprintf("%s:%g:%g:%d:%d:%d:%d:%d:%s", coverageKey(face), size, a.previewLineHeight, width, height, ink.R, ink.G, ink.B, sample)
 	for _, axis := range face.Axes {
 		key += fmt.Sprintf(":%s=%.3f", axis.Tag, a.axisValues[face.ID()][axis.Tag])
 	}
@@ -861,12 +904,13 @@ func (a *appState) ensurePreview(face fonts.Face, sample string, size float32, w
 		return key
 	}
 	a.previewLoading[key] = true
+	lineHeight := a.previewLineHeight
 	axes := make(map[string]float32)
 	for tag, value := range a.axisValues[face.ID()] {
 		axes[tag] = float32(value)
 	}
 	go func() {
-		bitmap, err := preview.Render(context.Background(), face.Path, face.Index, axes, sample, size, width, height, ink)
+		bitmap, err := preview.Render(context.Background(), face.Path, face.Index, axes, sample, size, lineHeight, width, height, ink)
 		a.window.Update(func() {
 			delete(a.previewLoading, key)
 			if err != nil {
@@ -1004,6 +1048,7 @@ func coverageRow(c *ui.Context, row coverage.Row) {
 
 func (a *appState) aboutView(c *ui.Context) {
 	guide, _ := embeddedDocs.ReadFile("docs/USER.md")
+	presets, _ := embeddedDocs.ReadFile("docs/PREVIEW_TEXTS.md")
 	ui.Column(c).Fill().Padding(24).Gap(12).Children(func() {
 		ui.Row(c).Gap(12).Children(func() {
 			if ui.Button(c, "返回字体浏览").Clicked() {
@@ -1016,11 +1061,22 @@ func (a *appState) aboutView(c *ui.Context) {
 			if ui.Button(c, "许可证").Clicked() {
 				a.aboutTab = 1
 			}
+			if ui.Button(c, "预览出处").Clicked() {
+				a.aboutTab = 2
+			}
 		})
 		if a.aboutTab == 0 {
 			ui.Scroll(c).Grow(1).Children(func() {
 				ui.Column(c).MaxWidth(900).Children(func() {
 					markdown.View(c, string(guide), &a.markdown)
+				})
+			})
+			return
+		}
+		if a.aboutTab == 2 {
+			ui.Scroll(c).Grow(1).Children(func() {
+				ui.Column(c).MaxWidth(1100).Children(func() {
+					markdown.View(c, string(presets), &a.presetMarkdown)
 				})
 			})
 			return
@@ -1224,22 +1280,7 @@ func (a *appState) browser(c *ui.Context) {
 		if a.compareLimit {
 			ui.Text(c, "最多选择 4 款字体进行对比").TextColor(c.Theme().TextMuted)
 		}
-		ui.Row(c).Gap(8).Children(func() {
-			ui.TextInput(c, &a.previewText).Placeholder("预览文案").Grow(1)
-			if ui.Button(c, "中文").Clicked() {
-				a.previewText = "字镜之美 123"
-			}
-			if ui.Button(c, "英文").Clicked() {
-				a.previewText = "FontLens 123"
-			}
-			if ui.Button(c, "字号 −").Clicked() && a.previewSize > 14 {
-				a.previewSize -= 2
-			}
-			ui.Textf(c, "%.0f px", a.previewSize)
-			if ui.Button(c, "字号 +").Clicked() && a.previewSize < 48 {
-				a.previewSize += 2
-			}
-		})
+		a.previewToolbar(c)
 		ui.Textf(c, "%d / %d 个字体面", len(a.rows), a.count(a.scope)).TextColor(c.Theme().TextMuted)
 		a.table.Selected = &a.selectedRow
 		a.table.Key = func(row int) any { return a.rows[row].ID() }
@@ -1262,7 +1303,7 @@ func (a *appState) browser(c *ui.Context) {
 			} else if column == 1 {
 				ui.Text(c, face.FullName).SingleLine().Padding(8, 4)
 			} else {
-				a.previewView(c, face, a.previewSize, 200, 44)
+				a.previewTextView(c, face, strings.SplitN(a.previewText, "\n", 2)[0], a.previewSize, 200, 44)
 			}
 		}).Grow(1).Changed() {
 			if a.selectedRow >= 0 && a.selectedRow < len(a.rows) {
@@ -1352,7 +1393,7 @@ func (a *appState) details(c *ui.Context) {
 			ui.Textf(c, "面 %d / %d · %s", face.Index+1, face.Count, face.Format)
 			ui.Textf(c, "文件大小 %d bytes · 文件修改 %s", face.Size, time.Unix(0, face.Modified).Local().Format("2006-01-02 15:04:05"))
 			ui.Text(c, "字体大样").Bold()
-			a.previewView(c, face, a.previewSize*2, 380, 150)
+			a.previewView(c, face, a.previewSize*1.5, 380, 260)
 			ui.Divider(c)
 			ui.Textf(c, "Family: %s", face.Family)
 			ui.Textf(c, "Subfamily: %s", face.Subfamily)

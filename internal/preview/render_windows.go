@@ -28,7 +28,7 @@ type oneFace struct{ face *font.Face }
 
 func (f oneFace) ResolveFace(r rune) *font.Face { return f.face }
 
-func Render(ctx context.Context, path string, faceIndex int, axes map[string]float32, sample string, size float32, width, height int, ink color.RGBA) (*image.RGBA, error) {
+func Render(ctx context.Context, path string, faceIndex int, axes map[string]float32, sample string, size, lineHeight float32, width, height int, ink color.RGBA) (*image.RGBA, error) {
 	if width <= 0 || height <= 0 || size <= 0 {
 		return nil, fmt.Errorf("invalid preview dimensions")
 	}
@@ -139,7 +139,6 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 	if err != nil {
 		return nil, err
 	}
-	runes := []rune(sample)
 	goFace := font.NewFace(parsed)
 	if len(axes) > 0 {
 		variations := make([]font.Variation, 0, len(axes))
@@ -148,56 +147,72 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 		}
 		goFace.SetVariations(variations)
 	}
-	input := shaping.Input{Text: runes, RunStart: 0, RunEnd: len(runes), Face: goFace, Size: fixed.Int26_6(size * 64)}
 	var segmenter shaping.Segmenter
-	runs := segmenter.Split(input, oneFace{input.Face})
 	var shaper shaping.HarfbuzzShaper
 	result := image.NewRGBA(image.Rect(0, 0, width, height))
-	penX := float32(8)
-	baseline := size * 1.25
-	for _, run := range runs {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		out := shaper.Shape(run)
-		if len(out.Glyphs) == 0 {
+	lineIndex := 0
+	for _, paragraph := range strings.Split(sample, "\n") {
+		runes := []rune(paragraph)
+		if len(runes) == 0 {
+			lineIndex++
 			continue
 		}
-		ids := make([]uint16, len(out.Glyphs))
-		advances := make([]float32, len(out.Glyphs))
-		offsets := make([]directwrite.DWRITE_GLYPH_OFFSET, len(out.Glyphs))
-		for i, glyph := range out.Glyphs {
-			if glyph.GlyphID == 0 {
-				return nil, fmt.Errorf("缺字：U+%04X", run.Text[glyph.ClusterIndex])
+		input := shaping.Input{Text: runes, RunStart: 0, RunEnd: len(runes), Face: goFace, Size: fixed.Int26_6(size * 64)}
+		runs := segmenter.Split(input, oneFace{input.Face})
+		outputs := make([]shaping.Output, 0, len(runs))
+		for _, run := range runs {
+			outputs = append(outputs, shaper.Shape(run))
+		}
+		var wrapper shaping.LineWrapper
+		lines, _ := wrapper.WrapParagraphF(shaping.WrapConfig{Direction: runs[0].Direction}, fixed.Int26_6((width-16)*64), runes, shaping.NewSliceIterator(outputs))
+		for _, line := range lines {
+			penX := float32(8)
+			baseline := size*1.25 + float32(lineIndex)*size*lineHeight
+			for _, out := range line {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if len(out.Glyphs) == 0 {
+					continue
+				}
+				ids := make([]uint16, len(out.Glyphs))
+				advances := make([]float32, len(out.Glyphs))
+				offsets := make([]directwrite.DWRITE_GLYPH_OFFSET, len(out.Glyphs))
+				for i, glyph := range out.Glyphs {
+					if glyph.GlyphID == 0 {
+						return nil, fmt.Errorf("缺字：U+%04X", runes[glyph.ClusterIndex])
+					}
+					ids[i] = uint16(glyph.GlyphID)
+					advances[i] = float32(glyph.Advance) / 64
+					offsets[i] = directwrite.DWRITE_GLYPH_OFFSET{AdvanceOffset: float32(glyph.XOffset) / 64, AscenderOffset: float32(glyph.YOffset) / 64}
+				}
+				glyphRun := directwrite.DWRITE_GLYPH_RUN{FontFace: dwFace, FontEmSize: size, GlyphCount: uint32(len(ids)), GlyphIndices: &ids[0], GlyphAdvances: &advances[0], GlyphOffsets: &offsets[0]}
+				var analysis *directwrite.IDWriteGlyphRunAnalysis
+				if err := factory2.CreateGlyphRunAnalysis(&glyphRun, nil, directwrite.DWRITE_RENDERING_MODE_NATURAL, directwrite.DWRITE_MEASURING_MODE_NATURAL, directwrite.DWRITE_GRID_FIT_MODE_DEFAULT, directwrite.DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE, penX, baseline, &analysis); err != nil {
+					return nil, err
+				}
+				var bounds foundation.RECT
+				err = analysis.GetAlphaTextureBounds(directwrite.DWRITE_TEXTURE_ALIASED_1x1, &bounds)
+				if err == nil && bounds.Right > bounds.Left && bounds.Bottom > bounds.Top {
+					alpha := make([]byte, int(bounds.Right-bounds.Left)*int(bounds.Bottom-bounds.Top))
+					err = analysis.CreateAlphaTexture(directwrite.DWRITE_TEXTURE_ALIASED_1x1, &bounds, alpha)
+					if err == nil {
+						paint(result, bounds, alpha, ink)
+					}
+				}
+				analysis.Release()
+				if err != nil {
+					return nil, err
+				}
+				for _, advance := range advances {
+					penX += advance
+				}
+				runtime.KeepAlive(ids)
+				runtime.KeepAlive(advances)
+				runtime.KeepAlive(offsets)
 			}
-			ids[i] = uint16(glyph.GlyphID)
-			advances[i] = float32(glyph.Advance) / 64
-			offsets[i] = directwrite.DWRITE_GLYPH_OFFSET{AdvanceOffset: float32(glyph.XOffset) / 64, AscenderOffset: float32(glyph.YOffset) / 64}
+			lineIndex++
 		}
-		glyphRun := directwrite.DWRITE_GLYPH_RUN{FontFace: dwFace, FontEmSize: size, GlyphCount: uint32(len(ids)), GlyphIndices: &ids[0], GlyphAdvances: &advances[0], GlyphOffsets: &offsets[0]}
-		var analysis *directwrite.IDWriteGlyphRunAnalysis
-		if err := factory2.CreateGlyphRunAnalysis(&glyphRun, nil, directwrite.DWRITE_RENDERING_MODE_NATURAL, directwrite.DWRITE_MEASURING_MODE_NATURAL, directwrite.DWRITE_GRID_FIT_MODE_DEFAULT, directwrite.DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE, penX, baseline, &analysis); err != nil {
-			return nil, err
-		}
-		var bounds foundation.RECT
-		err = analysis.GetAlphaTextureBounds(directwrite.DWRITE_TEXTURE_ALIASED_1x1, &bounds)
-		if err == nil && bounds.Right > bounds.Left && bounds.Bottom > bounds.Top {
-			alpha := make([]byte, int(bounds.Right-bounds.Left)*int(bounds.Bottom-bounds.Top))
-			err = analysis.CreateAlphaTexture(directwrite.DWRITE_TEXTURE_ALIASED_1x1, &bounds, alpha)
-			if err == nil {
-				paint(result, bounds, alpha, ink)
-			}
-		}
-		analysis.Release()
-		if err != nil {
-			return nil, err
-		}
-		for _, advance := range advances {
-			penX += advance
-		}
-		runtime.KeepAlive(ids)
-		runtime.KeepAlive(advances)
-		runtime.KeepAlive(offsets)
 	}
 	return result, nil
 }
