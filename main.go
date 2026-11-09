@@ -402,6 +402,27 @@ func checkFont(path, sample string) error {
 		if !secondLine || !antialiased {
 			return fmt.Errorf("preview at %g×: second line=%t, antialiasing=%t", scale, secondLine, antialiased)
 		}
+		line, err := preview.Render(context.Background(), path, 0, nil, strings.Repeat(sample+" ", 8), 28, 1.4, 0, 150, scale, color.RGBA{R: 35, G: 39, B: 46, A: 255})
+		if err != nil {
+			return fmt.Errorf("single-line preview at %g×: %w", scale, err)
+		}
+		tail := false
+		for y := 0; y < line.Rect.Dy(); y++ {
+			for x := 0; x < line.Rect.Dx(); x++ {
+				if line.RGBAAt(x, y).A == 0 {
+					continue
+				}
+				if y >= int(65*scale) {
+					return fmt.Errorf("single-line preview at %g× wrapped", scale)
+				}
+				if x >= int(260*scale) {
+					tail = true
+				}
+			}
+		}
+		if !tail || line.Rect.Dy() != wrapped.Rect.Dy() {
+			return fmt.Errorf("single-line preview at %g× clipped or resized", scale)
+		}
 	}
 	for _, axis := range faces[0].Axes {
 		if axis.Minimum == axis.Maximum {
@@ -1042,12 +1063,30 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 			a.previewLast = make(map[string]*ui.Bitmap)
 		}
 		a.previewLast[slot] = bitmap
-		return ui.Image(c, bitmap).Size(float32(width), float32(height)).Fit(ui.Contain)
+		displayWidth := float32(width)
+		if width == 0 {
+			displayWidth, _ = ui.ImageSize(bitmap)
+			displayWidth /= scale
+		}
+		image := ui.Image(c, bitmap).Size(displayWidth, float32(height)).Fit(ui.Contain)
+		if width == 0 {
+			image.Shrink(0)
+		}
+		return image
 	} else if message := a.previewErrors[key]; message != "" {
 		return ui.Text(c, message).TextColor(c.Theme().TextMuted).SingleLine()
 	} else if bitmap := a.previewLast[slot]; bitmap != nil {
-		return ui.Box(c).Size(float32(width), float32(height)).Children(func() {
-			ui.Image(c, bitmap).Size(float32(width), float32(height)).Fit(ui.Contain)
+		displayWidth := float32(width)
+		if width == 0 {
+			displayWidth, _ = ui.ImageSize(bitmap)
+			displayWidth /= scale
+		}
+		box := ui.Box(c).Size(displayWidth, float32(height))
+		if width == 0 {
+			box.Shrink(0)
+		}
+		return box.Children(func() {
+			ui.Image(c, bitmap).Size(displayWidth, float32(height)).Fit(ui.Contain)
 			ui.Text(c, "更新中…").Absolute().Right(4).Bottom(2).FontSize(12).TextColor(c.Theme().TextMuted)
 		})
 	} else {
@@ -1459,13 +1498,6 @@ func (a *appState) browser(c *ui.Context) {
 			sortTitle += " · 原始顺序"
 		}
 		nameWidth := max(120, (a.centerWidth-32-52-220)*2/3)
-		previewWidth := a.centerWidth - 32 - 52 - nameWidth
-		if width, ok := a.table.Columns.Widths["name"]; ok {
-			previewWidth = a.centerWidth - 32 - 52 - width
-		}
-		if width, ok := a.table.Columns.Widths["preview"]; ok {
-			previewWidth = width
-		}
 		columns := []ui.TableColumn{{Title: "对比", Width: 52}, {Title: sortTitle, ID: "name", Width: nameWidth, Sortable: true}, {Title: "预览（Family Name）", ID: "preview"}}
 		listTheme := *c.Theme()
 		listTheme.Spacing = 3
@@ -1490,7 +1522,7 @@ func (a *appState) browser(c *ui.Context) {
 				} else if face.Family == "" {
 					ui.Text(c, "Family Name 未提供").TextColor(c.Theme().TextMuted).SingleLine()
 				} else {
-					a.previewTextView(c, face, face.Family, a.previewSize, max(1, int(previewWidth)-15), max(44, int(math.Ceil(float64(a.previewSize*1.4))))).Translate(0, -a.previewSize*0.2)
+					a.previewTextView(c, face, face.Family, a.previewSize, 0, max(44, int(math.Ceil(float64(a.previewSize*1.4))))).Translate(0, -a.previewSize*0.2)
 				}
 			}).Grow(1).Changed() {
 				if a.selectedRow >= 0 && a.selectedRow < len(a.rows) {
