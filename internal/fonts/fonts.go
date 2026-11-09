@@ -268,6 +268,64 @@ func preferredName(records []NameRecord, id uint16) string {
 
 var cmapPreference = [][2]uint16{{3, 10}, {0, 6}, {0, 4}, {3, 1}, {0, 3}, {0, 2}, {0, 1}, {0, 0}}
 
+func LookupGlyph(path string, faceIndex int, character rune) (uint16, error) {
+	data, err := ReadRawTable(path, faceIndex, "cmap")
+	if err != nil {
+		return 0, err
+	}
+	table, _, err := tables.ParseCmap(data)
+	if err != nil {
+		return 0, err
+	}
+	for _, wanted := range cmapPreference {
+		for _, record := range table.Records {
+			if uint16(record.PlatformID) != wanted[0] || uint16(record.EncodingID) != wanted[1] {
+				continue
+			}
+			mapping, _, processErr := font.ProcessCmap(tables.Cmap{Records: []tables.EncodingRecord{record}}, tables.FPNone)
+			if processErr != nil {
+				return 0, processErr
+			}
+			if mapping == nil {
+				continue
+			}
+			glyph, ok := mapping.Lookup(character)
+			if !ok || glyph == 0 {
+				return 0, nil
+			}
+			return uint16(glyph), nil
+		}
+	}
+	return 0, nil
+}
+
+func GlyphMetrics(path string, faceIndex int, glyph uint16) (uint16, int16, error) {
+	hhea, err := ReadRawTable(path, faceIndex, "hhea")
+	if err != nil {
+		return 0, 0, err
+	}
+	hmtx, err := ReadRawTable(path, faceIndex, "hmtx")
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(hhea) < 36 {
+		return 0, 0, fmt.Errorf("hhea 表长度不足")
+	}
+	count := int(binary.BigEndian.Uint16(hhea[34:36]))
+	if count == 0 || len(hmtx) < count*4 {
+		return 0, 0, fmt.Errorf("hmtx 表长度不足")
+	}
+	advance := binary.BigEndian.Uint16(hmtx[min(int(glyph), count-1)*4:])
+	bearingOffset := int(glyph)*4 + 2
+	if int(glyph) >= count {
+		bearingOffset = count*4 + (int(glyph)-count)*2
+	}
+	if len(hmtx) < bearingOffset+2 {
+		return 0, 0, fmt.Errorf("glyph %d 超出 hmtx 表范围", glyph)
+	}
+	return advance, int16(binary.BigEndian.Uint16(hmtx[bearingOffset:])), nil
+}
+
 func readCmap(data []byte) (map[rune]struct{}, string, error) {
 	table, _, err := tables.ParseCmap(data)
 	if err != nil {

@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"fontlens/internal/coverage"
 	"fontlens/internal/fonts"
@@ -90,6 +92,10 @@ type appState struct {
 	axisValues       map[string]map[string]float64
 	selectedInstance map[string]string
 	detailsQuery     string
+	glyphInput       string
+	glyphOutput      string
+	glyphFaceID      string
+	glyphCharacter   string
 }
 
 func main() {
@@ -210,6 +216,16 @@ func checkFont(path string) error {
 		if table.Tag == "fvar" && len(faces[0].Axes) == 0 {
 			return fmt.Errorf("variable axes were not parsed")
 		}
+	}
+	for character := range faces[0].Characters {
+		glyph, lookupErr := fonts.LookupGlyph(path, 0, character)
+		if lookupErr != nil || glyph == 0 || glyph >= faces[0].Glyphs {
+			return fmt.Errorf("glyph lookup U+%04X: glyph %d: %v", character, glyph, lookupErr)
+		}
+		if _, _, lookupErr = fonts.GlyphMetrics(path, 0, glyph); lookupErr != nil {
+			return fmt.Errorf("glyph metrics: %w", lookupErr)
+		}
+		break
 	}
 	bitmap, err := preview.Render(context.Background(), path, 0, nil, "FontLens 123", 28, 260, 52, color.RGBA{R: 35, G: 39, B: 46, A: 255})
 	if err != nil {
@@ -639,26 +655,25 @@ func (a *appState) coverageCacheKey(face fonts.Face) string {
 	return fmt.Sprintf("%s:charsets:%d", coverageKey(face), a.charsetRevision)
 }
 
-func (a *appState) previewKey(face fonts.Face, size float32, width, height int, ink color.RGBA) string {
-	key := fmt.Sprintf("%s:%g:%d:%d:%d:%d:%d:%s", coverageKey(face), size, width, height, ink.R, ink.G, ink.B, a.previewText)
+func (a *appState) previewKey(face fonts.Face, sample string, size float32, width, height int, ink color.RGBA) string {
+	key := fmt.Sprintf("%s:%g:%d:%d:%d:%d:%d:%s", coverageKey(face), size, width, height, ink.R, ink.G, ink.B, sample)
 	for _, axis := range face.Axes {
 		key += fmt.Sprintf(":%s=%.3f", axis.Tag, a.axisValues[face.ID()][axis.Tag])
 	}
 	return key
 }
 
-func (a *appState) ensurePreview(face fonts.Face, size float32, width, height int, ink color.RGBA) string {
+func (a *appState) ensurePreview(face fonts.Face, sample string, size float32, width, height int, ink color.RGBA) string {
 	if a.previewCache == nil {
 		a.previewCache = make(map[string]*ui.Bitmap)
 		a.previewLoading = make(map[string]bool)
 		a.previewErrors = make(map[string]string)
 	}
-	key := a.previewKey(face, size, width, height, ink)
+	key := a.previewKey(face, sample, size, width, height, ink)
 	if a.previewCache[key] != nil || a.previewLoading[key] || a.previewErrors[key] != "" {
 		return key
 	}
 	a.previewLoading[key] = true
-	sample := a.previewText
 	axes := make(map[string]float32)
 	for tag, value := range a.axisValues[face.ID()] {
 		axes[tag] = float32(value)
@@ -681,8 +696,12 @@ func (a *appState) ensurePreview(face fonts.Face, size float32, width, height in
 }
 
 func (a *appState) previewView(c *ui.Context, face fonts.Face, size float32, width, height int) {
+	a.previewTextView(c, face, a.previewText, size, width, height)
+}
+
+func (a *appState) previewTextView(c *ui.Context, face fonts.Face, sample string, size float32, width, height int) {
 	textColor := c.Theme().Text
-	key := a.ensurePreview(face, size, width, height, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
+	key := a.ensurePreview(face, sample, size, width, height, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
 	if bitmap := a.previewCache[key]; bitmap != nil {
 		ui.Image(c, bitmap).Size(float32(width), float32(height)).Fit(ui.Contain)
 	} else if message := a.previewErrors[key]; message != "" {
@@ -1054,6 +1073,67 @@ func (a *appState) browser(c *ui.Context) {
 	})
 }
 
+func (a *appState) lookupGlyph(face fonts.Face) {
+	a.glyphFaceID = face.ID()
+	a.glyphCharacter = ""
+	a.glyphOutput = ""
+	input := strings.TrimSpace(a.glyphInput)
+	if input == "" {
+		return
+	}
+	var glyph uint16
+	if strings.HasPrefix(strings.ToLower(input), "gid:") {
+		value, err := strconv.ParseUint(strings.TrimSpace(input[4:]), 10, 16)
+		if err != nil {
+			a.glyphOutput = "字形 ID 应为 0–65535 的整数"
+			return
+		}
+		glyph = uint16(value)
+	} else {
+		var character rune
+		if strings.HasPrefix(strings.ToUpper(input), "U+") {
+			value, err := strconv.ParseUint(input[2:], 16, 32)
+			if err != nil || !utf8.ValidRune(rune(value)) {
+				a.glyphOutput = "请输入有效的 U+ 码位"
+				return
+			}
+			character = rune(value)
+		} else {
+			runes := []rune(input)
+			if len(runes) != 1 {
+				a.glyphOutput = "请输入单个字符、U+ 码位或 gid:字形 ID"
+				return
+			}
+			character = runes[0]
+		}
+		var err error
+		glyph, err = fonts.LookupGlyph(face.Path, face.Index, character)
+		if err != nil {
+			a.glyphOutput = err.Error()
+			return
+		}
+		if glyph == 0 {
+			a.glyphOutput = fmt.Sprintf("U+%04X · 未映射到字形", character)
+			return
+		}
+		a.glyphCharacter = string(character)
+		a.glyphOutput = fmt.Sprintf("%s · U+%04X · glyph ID %d", string(character), character, glyph)
+	}
+	if glyph >= face.Glyphs {
+		a.glyphOutput = fmt.Sprintf("glyph ID %d 超出字形总数 %d", glyph, face.Glyphs)
+		return
+	}
+	advance, bearing, err := fonts.GlyphMetrics(face.Path, face.Index, glyph)
+	if err != nil {
+		a.glyphOutput += " · " + err.Error()
+		return
+	}
+	if a.glyphCharacter == "" {
+		a.glyphOutput = fmt.Sprintf("glyph ID %d", glyph)
+	}
+	a.glyphOutput += fmt.Sprintf(" · 水平 advance %d · 左侧 bearing %d（设计单位）", advance, bearing)
+}
+
 func (a *appState) details(c *ui.Context) {
 	ui.Column(c).Fill().Padding(16).Gap(12).Children(func() {
 		ui.Text(c, "字体详细信息").FontSize(18).Bold()
@@ -1062,6 +1142,9 @@ func (a *appState) details(c *ui.Context) {
 			return
 		}
 		face := a.rows[a.selectedRow]
+		if a.glyphFaceID != face.ID() {
+			a.lookupGlyph(face)
+		}
 		a.initAxes(face)
 		a.ensureCoverage(face)
 		ui.Scroll(c).Grow(1).Gap(12).Children(func() {
@@ -1077,6 +1160,24 @@ func (a *appState) details(c *ui.Context) {
 			ui.Textf(c, "PostScript: %s", face.PostScript)
 			ui.Textf(c, "字形数: %d · Unicode 映射码位: %d", face.Glyphs, len(face.Characters))
 			ui.Textf(c, "采用 cmap: %s", face.Cmap)
+			ui.Text(c, "字符与字形查询").Bold()
+			if ui.TextInput(c, &a.glyphInput).Placeholder("字符、U+4E00 或 gid:12").Changed() {
+				a.lookupGlyph(face)
+			}
+			if a.glyphOutput != "" {
+				ui.Text(c, a.glyphOutput)
+			}
+			if a.glyphCharacter != "" {
+				a.previewTextView(c, face, a.glyphCharacter, 64, 200, 90)
+				ui.Row(c).Gap(8).Children(func() {
+					if ui.Button(c, "复制字符").Clicked() {
+						mygo.Clipboard.WriteText(a.glyphCharacter)
+					}
+					if ui.Button(c, "复制码位").Clicked() {
+						mygo.Clipboard.WriteText(fmt.Sprintf("U+%04X", []rune(a.glyphCharacter)[0]))
+					}
+				})
+			}
 			if len(face.Axes) > 0 {
 				ui.Text(c, "可变字体轴").Bold()
 				if len(face.Instances) > 0 {
