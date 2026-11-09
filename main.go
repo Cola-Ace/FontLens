@@ -54,7 +54,6 @@ type appState struct {
 	charsetRevision   int64
 	charsetMessage    string
 	themeMode         int
-	folderInput       string
 	scope             string
 	query             string
 	sortMode          int
@@ -1168,13 +1167,8 @@ func (a *appState) sidebar(c *ui.Context) {
 			a.rebuild()
 			a.saveSettings()
 		}
-		ui.TextInput(c, &a.folderInput).Placeholder("路径，或直接点击添加").Label("要添加的字体文件夹")
 		if ui.Button(c, "添加文件夹").Clicked() {
-			if strings.TrimSpace(a.folderInput) == "" {
-				a.chooseFolder()
-			} else {
-				a.addFolder(a.folderInput)
-			}
+			a.chooseFolder()
 		}
 		if ui.Button(c, "刷新").Clicked() {
 			a.refresh()
@@ -1202,9 +1196,6 @@ func (a *appState) sidebar(c *ui.Context) {
 					ui.Text(c, message).FontSize(12)
 				}
 			})
-		}
-		if ui.Button(c, "说明与许可证").Clicked() {
-			a.about = true
 		}
 		themes := []string{"跟随系统", "浅色", "深色"}
 		if ui.Button(c, "主题："+themes[a.themeMode]).Clicked() {
@@ -1271,7 +1262,6 @@ func (a *appState) addFolder(input string) {
 		return
 	}
 	a.sources = append(a.sources, path)
-	a.folderInput = ""
 	a.saveSettings()
 	a.refresh()
 }
