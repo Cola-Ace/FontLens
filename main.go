@@ -1529,6 +1529,12 @@ func (a *appState) browser(c *ui.Context, width float32) {
 		a.table.Selected = &a.selectedRow
 		a.table.Sort = &a.tableSort
 		a.table.Key = func(row int) any { return a.rows[row].ID() }
+		a.table.CellMenu = func(m *ui.Menu, row, column int) {
+			family := a.rows[row].Family
+			if m.Item("复制 Family Name").Disabled(family == "").Chosen() {
+				mygo.Clipboard.WriteText(family)
+			}
+		}
 		sortTitle := "Name（字体名称）"
 		if a.sortMode == 0 {
 			sortTitle += " · 原始顺序"
