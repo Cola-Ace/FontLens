@@ -22,6 +22,10 @@ go tool mygo build -platform windows/amd64 -skip-installer
 
 产物位于 `dist/windows-amd64/FontLens.exe`。项目锁定 MyGo v0.8.3，依赖由 `go.mod` 和 `go.sum` 指定。
 
+## 源码结构
+
+根目录的 `main.go` 调用应用入口。`internal/app/` 集中管理应用生命周期、界面、设置与自检；字体读取、覆盖统计、预览渲染和缓存分别位于 `internal/fonts/`、`internal/coverage/`、`internal/preview/` 和 `internal/store/`。
+
 ## 数据与许可
 
 项目源码采用 MIT 许可证。内置的 GB2312/GBK 字符集合由 Python 3.12 标准编解码映射生成，分别保存在 `internal/coverage/data/gb2312.txt` 和 `gbk.txt`。缺少确定版本数据的其他字表标为“待导入”。Unicode 区块范围由 `@unicode/unicode-17.0.0` v2.1.0 数据生成，分母按 Go 1.27.3 的 Unicode 17.0.0 分类表排除未分配、代理和私用码位；私用区单列。文学预览文案的原作和出处见 [预览文案出处](docs/PREVIEW_TEXTS.md)。第三方许可在 `third_party/licenses/` 查看。字体文件的许可由其各自权利人规定。

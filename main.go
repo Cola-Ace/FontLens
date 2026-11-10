@@ -1,69 +1,7 @@
 package main
 
-import (
-	"fmt"
-	"log"
-	"os"
-	"path/filepath"
-	"runtime/debug"
-
-	"fontlens/internal/store"
-	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/ui"
-)
+import "fontlens/internal/app"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "--version" {
-		fmt.Println(mygo.App.Version())
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "--self-check" {
-		fontPath := ""
-		sample := "FontLens 123"
-		if len(os.Args) > 2 {
-			fontPath = os.Args[2]
-		}
-		if len(os.Args) > 3 {
-			sample = os.Args[3]
-		}
-		if err := selfCheck(fontPath, sample); err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println("FontLens self-check passed")
-		return
-	}
-	if os.Getenv("GOMEMLIMIT") == "" {
-		debug.SetMemoryLimit(32 << 20)
-	}
-	if os.Getenv("MYGO_GPU") == "" {
-		os.Setenv("MYGO_GPU", "0")
-	}
-	app := &appState{leftWidth: defaultLeftWidth, centerWidth: defaultCenterWidth, coverageSplit: 50, licenseSplit: 25, licenseName: "LICENSE", scope: "all", selectedRow: -1, previewText: "FontLens 123", previewPreset: "自定义", previewSize: 30, previewLineHeight: 1.5}
-	app.sortMode = 1
-	app.tableSort = ui.SortOrder{Column: "name"}
-	app.sortSeen = app.tableSort
-	app.tree.Open.Add("all")
-	app.tree.Open.Add("custom")
-	app.loadSettings()
-	if path := settingsPath(); path != "" {
-		var err error
-		app.store, err = store.Open(filepath.Join(filepath.Dir(path), "index.db"))
-		if err != nil {
-			log.Printf("索引缓存不可用: %v", err)
-		}
-	}
-	mygo.App.WhenReady(func() {
-		app.window = mygo.NewWindow(mygo.WindowOptions{
-			Title: "FontLens", Width: defaultWindowWidth, Height: 900, MinWidth: 1024, MinHeight: 720, StateKey: "main",
-			Content: ui.View(app.view),
-		})
-		app.refresh()
-	})
-	if err := mygo.App.Run(); err != nil {
-		log.Fatal(err)
-	}
-	app.saveSettings()
-	if app.store != nil {
-		app.store.Close()
-	}
+	app.Run()
 }

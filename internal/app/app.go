@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"fontlens/internal/store"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/markdown"
 )
 
 const (
@@ -53,10 +52,6 @@ type appState struct {
 	scanID            int
 	showErrors        bool
 	format            string
-	about             bool
-	markdown          markdown.Options
-	presetMarkdown    markdown.Options
-	noticesMarkdown   markdown.Options
 	coverageCache     map[string]coverage.Result
 	coverageLoading   map[string]bool
 	coveragePage      bool
@@ -83,9 +78,6 @@ type appState struct {
 	rawError          string
 	rawPage           int
 	store             *store.Store
-	aboutTab          int
-	licenseName       string
-	licenseSplit      float32
 	axisValues        map[string]map[string]float64
 	selectedInstance  map[string]string
 	detailsQuery      string
@@ -104,10 +96,6 @@ func (a *appState) view(c *ui.Context) {
 		c.SetTheme(ui.LightTheme())
 	case 2:
 		c.SetTheme(ui.DarkTheme())
-	}
-	if a.about {
-		a.aboutView(c)
-		return
 	}
 	if a.comparePage {
 		a.compareView(c)

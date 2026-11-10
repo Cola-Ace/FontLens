@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"encoding/json"
@@ -19,7 +19,6 @@ type settings struct {
 	LeftWidth       float32               `json:"leftWidth,omitempty"`
 	CenterWidth     float32               `json:"centerWidth,omitempty"`
 	CoverageSplit   float32               `json:"coverageSplit,omitempty"`
-	LicenseSplit    float32               `json:"licenseSplit,omitempty"`
 	TableWidths     map[string]float32    `json:"tableWidths,omitempty"`
 }
 
@@ -64,9 +63,6 @@ func (a *appState) loadSettings() {
 		if saved.CoverageSplit > 0 && saved.CoverageSplit < 100 {
 			a.coverageSplit = saved.CoverageSplit
 		}
-		if saved.LicenseSplit > 0 && saved.LicenseSplit < 100 {
-			a.licenseSplit = saved.LicenseSplit
-		}
 		for id, width := range saved.TableWidths {
 			if width > 0 {
 				if a.table.Columns.Widths == nil {
@@ -95,8 +91,8 @@ func (a *appState) saveSettings() {
 		Sources: a.sources, Scope: a.scope, Open: open, Charsets: a.charsets,
 		CharsetRevision: a.charsetRevision, ThemeMode: a.themeMode,
 		LeftWidth: a.leftWidth, CenterWidth: a.centerWidth,
-		CoverageSplit: a.coverageSplit, LicenseSplit: a.licenseSplit,
-		TableWidths: a.table.Columns.Widths,
+		CoverageSplit: a.coverageSplit,
+		TableWidths:   a.table.Columns.Widths,
 	}, "", "  ")
 	if err == nil {
 		_ = os.WriteFile(path, data, 0600)
