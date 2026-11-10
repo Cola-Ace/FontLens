@@ -99,7 +99,8 @@ type appState struct {
 	previewLineHeight float32
 	previewCache      map[string]*ui.Bitmap
 	previewLast       map[string]*ui.Bitmap
-	previewLoading    map[string]bool
+	previewLoading    map[string]*previewRequest
+	previewWanted     map[string]bool
 	previewErrors     map[string]string
 	compareIDs        []string
 	comparePage       bool
@@ -121,6 +122,10 @@ type appState struct {
 	glyphOutput       string
 	glyphFaceID       string
 	glyphCharacter    string
+}
+
+type previewRequest struct {
+	cancel context.CancelFunc
 }
 
 func main() {
@@ -853,6 +858,8 @@ func (a *appState) count(scope string) int {
 }
 
 func (a *appState) view(c *ui.Context) {
+	a.previewWanted = make(map[string]bool)
+	defer a.cancelPreviews(a.previewWanted)
 	switch a.themeMode {
 	case 1:
 		c.SetTheme(ui.LightTheme())
@@ -972,6 +979,7 @@ func (a *appState) compareView(c *ui.Context) {
 			ui.Textf(c, "字体对比 · %d 款", len(faces)).FontSize(22).Bold()
 		})
 		a.previewToolbar(c)
+		a.syncPreviews(c, faces, a.previewText, a.previewSize*1.5, 450, 240)
 		ui.Scroll(c).Grow(1).Children(func() {
 			for start := 0; start < len(faces); start += 2 {
 				end := min(start+2, len(faces))
@@ -1055,23 +1063,32 @@ func (a *appState) previewKey(face fonts.Entry, sample string, size float32, wid
 func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, width, height int, scale float32, ink color.RGBA) string {
 	if a.previewCache == nil {
 		a.previewCache = make(map[string]*ui.Bitmap)
-		a.previewLoading = make(map[string]bool)
+		a.previewLoading = make(map[string]*previewRequest)
 		a.previewErrors = make(map[string]string)
 	}
 	key := a.previewKey(face, sample, size, width, height, scale, ink)
-	if a.previewCache[key] != nil || a.previewLoading[key] || a.previewErrors[key] != "" {
+	if a.previewCache[key] != nil || a.previewLoading[key] != nil || a.previewErrors[key] != "" {
 		return key
 	}
-	a.previewLoading[key] = true
+	ctx, cancel := context.WithCancel(context.Background())
+	request := &previewRequest{cancel: cancel}
+	a.previewLoading[key] = request
 	lineHeight := a.previewLineHeight
 	axes := make(map[string]float32)
 	for tag, value := range a.axisValues[face.ID()] {
 		axes[tag] = float32(value)
 	}
 	go func() {
-		bitmap, err := preview.Render(context.Background(), face.Path, face.Index, axes, sample, size, lineHeight, width, height, scale, ink)
+		bitmap, err := preview.Render(ctx, face.Path, face.Index, axes, sample, size, lineHeight, width, height, scale, ink)
 		a.window.Update(func() {
+			defer cancel()
+			if a.previewLoading[key] != request {
+				return
+			}
 			delete(a.previewLoading, key)
+			if ctx.Err() != nil {
+				return
+			}
 			if err != nil {
 				a.previewErrors[key] = err.Error()
 				return
@@ -1085,6 +1102,32 @@ func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, 
 	return key
 }
 
+func (a *appState) cancelPreviews(wanted map[string]bool) {
+	for key, request := range a.previewLoading {
+		if !wanted[key] {
+			request.cancel()
+			delete(a.previewLoading, key)
+		}
+	}
+}
+
+func (a *appState) syncPreviews(c *ui.Context, faces []fonts.Entry, sample string, size float32, width, height int) {
+	textColor := c.Theme().Text
+	ink := color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255}
+	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
+	for _, face := range faces {
+		text := sample
+		if width == 0 {
+			text = face.Family
+			if text == "" {
+				continue
+			}
+		}
+		a.previewWanted[a.previewKey(face, text, size, width, height, scale, ink)] = true
+		a.ensurePreview(face, text, size, width, height, scale, ink)
+	}
+}
+
 func (a *appState) previewView(c *ui.Context, face fonts.Entry, size float32, width, height int) {
 	a.previewTextView(c, face, a.previewText, size, width, height)
 }
@@ -1092,7 +1135,7 @@ func (a *appState) previewView(c *ui.Context, face fonts.Entry, size float32, wi
 func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) ui.Element {
 	textColor := c.Theme().Text
 	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
-	key := a.ensurePreview(face, sample, size, width, height, scale, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
+	key := a.previewKey(face, sample, size, width, height, scale, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
 	slot := fmt.Sprintf("%s:%d:%d:%d:%d:%d", face.ID(), width, height, textColor.R, textColor.G, textColor.B)
 	if bitmap := a.previewCache[key]; bitmap != nil {
 		if a.previewLast == nil || len(a.previewLast) >= 400 {
@@ -1545,6 +1588,11 @@ func (a *appState) browser(c *ui.Context, width float32) {
 		columns := []ui.TableColumn{{Title: "对比", Width: 52}, {Title: sortTitle, ID: "name", Width: nameWidth, Sortable: true}, {Title: "预览（Family Name）", ID: "preview"}}
 		listTheme := *c.Theme()
 		listTheme.Spacing = 3
+		// Visible reports the last frame; reading it requests a new frame when scrolling changes it.
+		first, last := a.table.Visible()
+		first = min(max(0, first), len(a.rows))
+		end := min(max(first, last+1), len(a.rows))
+		a.syncPreviews(c, a.rows[first:end], "", a.previewSize, 0, max(44, int(math.Ceil(float64(a.previewSize*1.4)))))
 		ui.Themed(c, &listTheme).Grow(1).Children(func() {
 			if ui.Table(c, &a.table, columns, len(a.rows), func(row, column int) {
 				face := a.rows[row]
@@ -1679,6 +1727,7 @@ func (a *appState) details(c *ui.Context) {
 				ui.Text(c, a.glyphOutput)
 			}
 			if a.glyphCharacter != "" {
+				a.syncPreviews(c, []fonts.Entry{face.Entry}, a.glyphCharacter, 64, 200, 90)
 				a.previewTextView(c, face.Entry, a.glyphCharacter, 64, 200, 90)
 				ui.Row(c).Gap(8).Children(func() {
 					if ui.Button(c, "复制字符").Clicked() {

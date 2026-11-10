@@ -36,12 +36,18 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 	if width < 0 || height <= 0 || size <= 0 || scale <= 0 {
 		return nil, fmt.Errorf("invalid preview dimensions")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// Each render parses font outlines; bound concurrent copies of large fonts.
 	select {
 	case renderSlots <- struct{}{}:
 		defer func() { <-renderSlots }()
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -139,6 +145,9 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 		dwFace = (*directwrite.IDWriteFontFace)(unsafe.Pointer(face5))
 	}
 	defer dwFace.Release()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	loaders, err := opentype.NewLoaders(resource)
 	if err != nil {
 		return nil, err
@@ -148,6 +157,9 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 	}
 	parsed, err := font.NewFont(loaders[faceIndex])
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	goFace := font.NewFace(parsed)
@@ -170,6 +182,9 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 	}
 	var layout []previewLine
 	for _, paragraph := range strings.Split(sample, "\n") {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		runes := []rune(paragraph)
 		if len(runes) == 0 {
 			layout = append(layout, previewLine{})
