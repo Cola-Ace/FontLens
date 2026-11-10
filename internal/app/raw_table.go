@@ -9,12 +9,16 @@ import (
 )
 
 func (a *appState) openRawTable(face fonts.Entry, tag string) {
+	a.rawLoading.finish()
+	hint := newLoadingHint(a.window)
+	a.rawLoading = hint
 	a.rawFace, a.rawTag, a.rawData, a.rawError, a.rawPage = face, tag, nil, "", 0
 	a.rawViewOpen = true
 	go func() {
 		data, err := fonts.ReadRawTable(face.Path, face.Index, tag)
 		a.window.Update(func() {
-			if !a.rawViewOpen || a.rawFace.ID() != face.ID() || a.rawTag != tag {
+			hint.finish()
+			if !a.rawViewOpen || a.rawLoading != hint || coverageKey(a.rawFace) != coverageKey(face) || a.rawTag != tag {
 				return
 			}
 			if err != nil {
@@ -30,6 +34,7 @@ func (a *appState) rawTableView(c *ui.Context) {
 	ui.Column(c).Fill().Padding(20).Gap(12).Children(func() {
 		ui.Row(c).Gap(12).Children(func() {
 			if ui.Button(c, "返回详情").Clicked() {
+				a.rawLoading.finish()
 				a.rawViewOpen = false
 				a.rawData = nil
 			}
@@ -41,7 +46,9 @@ func (a *appState) rawTableView(c *ui.Context) {
 			return
 		}
 		if a.rawData == nil {
-			ui.Text(c, "正在读取表数据…")
+			if a.rawLoading.show() {
+				ui.Text(c, "正在读取表数据…")
+			}
 			return
 		}
 		const pageSize = 256

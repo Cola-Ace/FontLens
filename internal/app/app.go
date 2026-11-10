@@ -29,6 +29,8 @@ type appState struct {
 	detailKey         string
 	detailGeneration  int
 	detailError       string
+	detailLoading     *loadingHint
+	detailPending     *detailResult
 	leftWidth         float32
 	centerWidth       float32
 	sources           []string
@@ -54,7 +56,7 @@ type appState struct {
 	showErrors        bool
 	format            string
 	coverageCache     map[string]coverage.Result
-	coverageLoading   map[string]bool
+	coverageLoading   map[string]*loadingHint
 	coveragePage      bool
 	coverageMode      int
 	coverageQuery     string
@@ -78,6 +80,7 @@ type appState struct {
 	rawTag            string
 	rawData           []byte
 	rawError          string
+	rawLoading        *loadingHint
 	rawPage           int
 	store             *store.Store
 	axisValues        map[string]map[string]float64
@@ -87,7 +90,10 @@ type appState struct {
 
 func (a *appState) view(c *ui.Context) {
 	a.previewWanted = make(map[string]bool)
-	a.previewSlots = make(map[string]bool)
+	// Keep displayed previews available when returning from pages without previews.
+	if !a.rawViewOpen && !a.coveragePage {
+		a.previewSlots = make(map[string]bool)
+	}
 	defer a.cancelPreviews(a.previewWanted)
 	switch a.themeMode {
 	case 1:

@@ -20,38 +20,56 @@ func (a *appState) coverageCacheKey(face fonts.Entry) string {
 	return fmt.Sprintf("%s:charsets:v2:%d", coverageKey(face), a.charsetRevision)
 }
 
+func (a *appState) cachedCoverage(face fonts.Entry) (coverage.Result, bool) {
+	if result, ready := a.coverageCache[a.coverageCacheKey(face)]; ready {
+		return result, true
+	}
+	for key, result := range a.coverageCache {
+		if strings.HasPrefix(key, coverageKey(face)+":charsets:") {
+			return result, true
+		}
+	}
+	return coverage.Result{}, false
+}
+
+func (a *appState) readCoverage(face fonts.Face, key string, imported []coverage.Definition) coverage.Result {
+	if a.store != nil {
+		if result, found := a.store.Coverage(key); found {
+			return result
+		}
+	}
+	result := coverage.AnalyzeWith(face.Characters, imported)
+	if a.store != nil {
+		_ = a.store.SaveCoverage(key, result)
+	}
+	return result
+}
+
 func (a *appState) ensureCoverage(face fonts.Face) {
 	if !face.HasUnicodeCmap() {
 		return
 	}
 	if a.coverageCache == nil {
 		a.coverageCache = make(map[string]coverage.Result)
-		a.coverageLoading = make(map[string]bool)
+		a.coverageLoading = make(map[string]*loadingHint)
 	}
 	key := a.coverageCacheKey(face.Entry)
-	if _, exists := a.coverageCache[key]; exists || a.coverageLoading[key] {
+	if _, exists := a.coverageCache[key]; exists || a.coverageLoading[key] != nil {
 		return
 	}
-	a.coverageLoading[key] = true
+	hint := newLoadingHint(a.window)
+	a.coverageLoading[key] = hint
 	imported := slices.Clone(a.charsets)
 	generation := a.detailGeneration
-	entry, characters := face.Entry, face.Characters
+	entry := face.Entry
 	go func() {
-		result, found := coverage.Result{}, false
-		if a.store != nil {
-			result, found = a.store.Coverage(key)
-		}
-		if !found {
-			result = coverage.AnalyzeWith(characters, imported)
-			if a.store != nil {
-				_ = a.store.SaveCoverage(key, result)
-			}
-		}
+		result := a.readCoverage(face, key, imported)
 		a.window.Update(func() {
+			hint.finish()
 			if generation != a.detailGeneration || key != a.coverageCacheKey(entry) {
 				return
 			}
-			a.coverageCache[key] = result
+			a.coverageCache = map[string]coverage.Result{key: result}
 			delete(a.coverageLoading, key)
 		})
 	}()
@@ -63,18 +81,27 @@ func (a *appState) coverageView(c *ui.Context) {
 		return
 	}
 	face := a.ensureDetails(a.rows[a.selectedRow])
+	if a.detailPending != nil {
+		a.commitDetails()
+		face = a.detailFace
+	}
 	if face == nil {
 		a.coveragePage = false
 		return
 	}
-	a.ensureCoverage(*face)
-	result, ready := a.coverageCache[a.coverageCacheKey(face.Entry)]
+	if a.detailLoading == nil {
+		a.ensureCoverage(*face)
+	}
+	result, ready := a.cachedCoverage(face.Entry)
 	ui.Column(c).Fill().Padding(20).Gap(12).Children(func() {
 		ui.Row(c).Gap(12).Children(func() {
 			if ui.Button(c, "返回浏览").Clicked() {
 				a.coveragePage = false
 			}
 			ui.Text(c, "字符集支持").FontSize(22).Bold()
+			if a.detailLoading.show() || a.coverageLoading[a.coverageCacheKey(face.Entry)].show() {
+				ui.Text(c, "更新中…").TextColor(c.Theme().TextMuted)
+			}
 		})
 		ui.Textf(c, "%s · %s · 面 %d", face.FullName, face.Path, face.Index).SingleLine()
 		if !face.HasUnicodeCmap() {
@@ -82,7 +109,6 @@ func (a *appState) coverageView(c *ui.Context) {
 			return
 		}
 		if !ready {
-			ui.Text(c, "正在计算覆盖统计…")
 			return
 		}
 		ui.Textf(c, "Unicode 映射码位 %d · 字形 %d · Unicode 17.0.0", result.Codepoints, face.Glyphs)
