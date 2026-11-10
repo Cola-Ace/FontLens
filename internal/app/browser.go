@@ -162,7 +162,6 @@ func (a *appState) browser(c *ui.Context, width float32) {
 			ui.Text(c, "最多选择 4 款字体进行对比").TextColor(c.Theme().TextMuted)
 		}
 		a.previewToolbar(c)
-		ui.Textf(c, "%d / %d 个字体面", len(a.rows), a.count(a.scope)).TextColor(c.Theme().TextMuted)
 		a.table.Selected = &a.selectedRow
 		a.table.Sort = &a.tableSort
 		a.table.Key = func(row int) any { return a.rows[row].ID() }

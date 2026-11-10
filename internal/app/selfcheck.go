@@ -28,6 +28,11 @@ func selfCheck(fontPath, sample string) error {
 	if err := checkFontDeduplication(); err != nil {
 		return err
 	}
+	for _, preset := range preview.Presets {
+		if strings.ContainsAny(preset.Text, "\r\n") {
+			return fmt.Errorf("preview preset %s contains a line break", preset.Label)
+		}
+	}
 	imported, err := coverage.Parse("sample.txt", []byte("---\nname: 示例\ncount: 2\n---\n字\n字\n镜\n"))
 	if err != nil || imported.Name != "示例" || len([]rune(imported.Members)) != 2 {
 		return fmt.Errorf("charset import check failed: %v", err)
@@ -211,6 +216,30 @@ func checkFont(path, sample string) error {
 	bitmap, err := preview.Render(context.Background(), path, 0, nil, sample, 28, 1.4, 260, 52, 1, color.RGBA{R: 35, G: 39, B: 46, A: 255})
 	if err != nil {
 		return fmt.Errorf("DirectWrite preview: %w", err)
+	}
+	missing := ""
+	for _, character := range []rune{'汉', '😀', '\U0010FFFF', '\uFFFF'} {
+		if !faces[0].Characters.Contains(character) {
+			missing += string(character)
+		}
+	}
+	if missing != "" {
+		blank, err := preview.Render(context.Background(), path, 0, nil, missing, 28, 1.4, 260, 52, 1, color.RGBA{A: 255})
+		if err != nil {
+			return fmt.Errorf("missing-glyph preview: %w", err)
+		}
+		for pixel := 3; pixel < len(blank.Pix); pixel += 4 {
+			if blank.Pix[pixel] != 0 {
+				return fmt.Errorf("missing glyphs were drawn instead of left blank")
+			}
+		}
+		mixed, err := preview.Render(context.Background(), path, 0, nil, sample+missing, 28, 1.4, 260, 52, 1, color.RGBA{R: 35, G: 39, B: 46, A: 255})
+		if err != nil {
+			return fmt.Errorf("mixed missing-glyph preview: %w", err)
+		}
+		if !bytes.Equal(bitmap.Pix, mixed.Pix) {
+			return fmt.Errorf("missing glyphs changed the supported preview text")
+		}
 	}
 	for _, scale := range []float32{1, 1.25, 1.5, 2} {
 		wrapped, err := preview.Render(context.Background(), path, 0, nil, strings.Repeat(sample+" ", 8), 28, 1.4, 260, 150, scale, color.RGBA{R: 35, G: 39, B: 46, A: 255})

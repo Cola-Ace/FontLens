@@ -57,7 +57,7 @@ func (a *appState) compareView(c *ui.Context) {
 
 func (a *appState) previewToolbar(c *ui.Context) {
 	ui.Row(c).Gap(8).Children(func() {
-		if ui.TextArea(c, &a.previewText).Placeholder("输入多行预览文案").Height(68).Grow(1).Changed() {
+		if ui.TextInput(c, &a.previewText).Placeholder("输入预览文案").Grow(1).Changed() {
 			a.previewPreset = "自定义"
 		}
 		labels := []string{"自定义"}

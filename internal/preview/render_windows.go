@@ -113,12 +113,18 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 	}
 	defer face.Release()
 	codepoints := make([]uint32, 0, len(sample))
+	textRanges := make([]directwrite.DWRITE_TEXT_RANGE, 0, len(sample))
+	var position uint32
 	for _, r := range sample {
+		textRange := directwrite.DWRITE_TEXT_RANGE{StartPosition: position, Length: uint32(utf16.RuneLen(r))}
+		position += textRange.Length
 		if unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r >= 0xFE00 && r <= 0xFE0F || r >= 0xE0100 && r <= 0xE01EF {
 			continue
 		}
 		codepoints = append(codepoints, uint32(r))
+		textRanges = append(textRanges, textRange)
 	}
+	var missing []directwrite.DWRITE_TEXT_RANGE
 	if len(codepoints) > 0 {
 		glyphs := make([]uint16, len(codepoints))
 		if err := face.GetGlyphIndices(&codepoints[0], uint32(len(codepoints)), &glyphs[0]); err != nil {
@@ -126,7 +132,7 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 		}
 		for i, glyph := range glyphs {
 			if glyph == 0 {
-				return nil, fmt.Errorf("缺字：U+%04X", codepoints[i])
+				missing = append(missing, textRanges[i])
 			}
 		}
 	}
@@ -234,10 +240,10 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return drawLayout(ctx, layout, width, height, scale, ink)
+	return drawLayout(ctx, layout, missing, width, height, scale, ink)
 }
 
-func drawLayout(ctx context.Context, layout *directwrite.IDWriteTextLayout, width, height int, scale float32, ink color.RGBA) (*image.RGBA, error) {
+func drawLayout(ctx context.Context, layout *directwrite.IDWriteTextLayout, missing []directwrite.DWRITE_TEXT_RANGE, width, height int, scale float32, ink color.RGBA) (*image.RGBA, error) {
 	pixelWidth := int(math.Ceil(float64(float32(max(1, width)) * scale)))
 	pixelHeight := int(math.Ceil(float64(float32(height) * scale)))
 	if float64(pixelWidth)*float64(pixelHeight)*4 > maxPreviewBitmapBytes {
@@ -270,6 +276,19 @@ func drawLayout(ctx context.Context, layout *directwrite.IDWriteTextLayout, widt
 		return nil, err
 	}
 	defer brush.Release()
+	if len(missing) > 0 {
+		var blank *direct2d.ID2D1SolidColorBrush
+		if err := target.CreateSolidColorBrush(&common.D2D1_COLOR_F{}, nil, &blank); err != nil {
+			return nil, err
+		}
+		defer blank.Release()
+		// Hide missing glyphs while retaining their layout advances.
+		for _, textRange := range missing {
+			if err := layout.SetDrawingEffect(&blank.IUnknown, textRange); err != nil {
+				return nil, err
+			}
+		}
+	}
 	target.SetTextAntialiasMode(direct2d.D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE)
 	target.BeginDraw()
 	target.Clear(&common.D2D1_COLOR_F{})
