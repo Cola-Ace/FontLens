@@ -66,7 +66,9 @@ func (a *appState) sidebar(c *ui.Context) {
 			case "custom":
 				label = "自定义文件夹"
 			default:
-				label = filepath.Base(node)
+				if !slices.Contains(a.sources, node) {
+					label = filepath.Base(node)
+				}
 			}
 			ui.Row(c).Grow(1).MinWidth(0).Height(22).Padding(0, 6, 0, 0).Gap(4).AlignItems(ui.Center).Children(func() {
 				if icon != "" {
