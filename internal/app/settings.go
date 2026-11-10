@@ -58,6 +58,9 @@ func (a *appState) loadSettings() {
 			}
 			if saved.CenterWidth > 0 {
 				a.centerWidth = saved.CenterWidth
+				if saved.LeftWidth == float32(defaultLeftWidth) && saved.CenterWidth == 874 {
+					a.centerWidth = defaultCenterWidth
+				}
 			}
 		}
 		if saved.CoverageSplit > 0 && saved.CoverageSplit < 100 {

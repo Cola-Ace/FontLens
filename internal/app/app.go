@@ -13,8 +13,9 @@ import (
 const (
 	defaultWindowWidth = 1440
 	defaultLeftWidth   = 208 * 4.0 / 3
-	defaultDetailWidth = (defaultWindowWidth - 208 - 800 - 2) * 2.0 / 3
+	defaultDetailWidth = (defaultWindowWidth - 208 - 800 - 2) * 5.0 / 6
 	defaultCenterWidth = defaultWindowWidth - defaultLeftWidth - defaultDetailWidth - 2
+	defaultNameWidth   = 285
 )
 
 type appState struct {

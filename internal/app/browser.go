@@ -185,7 +185,7 @@ func (a *appState) browser(c *ui.Context, width float32) {
 		if a.sortMode == 0 {
 			sortTitle += " · 原始顺序"
 		}
-		nameWidth := max(120, (width-32-52-220)*2/3)
+		nameWidth := max(120, defaultNameWidth+(width-defaultCenterWidth)/2)
 		columns := []ui.TableColumn{{Title: "对比", Width: 52}, {Title: sortTitle, ID: "name", Width: nameWidth, Sortable: true}, {Title: "预览（Family Name）", ID: "preview"}}
 		listTheme := *c.Theme()
 		listTheme.Spacing = 3
