@@ -99,6 +99,12 @@ func (a *appState) sidebar(c *ui.Context) {
 						a.chooseFolder()
 					}
 				})
+			} else if slices.Contains(a.sources, node) {
+				row.ContextMenu(func(m *ui.Menu) {
+					if m.Item("移除该文件夹").Chosen() {
+						a.removeFolder(node)
+					}
+				})
 			}
 		}).Grow(1).Changed() {
 			a.scope = a.tree.Item(a.treeRow)
@@ -116,10 +122,7 @@ func (a *appState) sidebar(c *ui.Context) {
 		}
 		if slices.Contains(a.sources, a.scope) {
 			if ui.Button(c, "移除当前来源").Clicked() {
-				a.sources = slices.DeleteFunc(a.sources, func(source string) bool { return source == a.scope })
-				a.scope = "custom"
-				a.saveSettings()
-				a.refresh()
+				a.removeFolder(a.scope)
 			}
 		}
 		if len(a.errors) > 0 && ui.Button(c, fmt.Sprintf("读取错误 (%d)", len(a.errors))).Clicked() {
@@ -138,6 +141,13 @@ func (a *appState) sidebar(c *ui.Context) {
 			a.saveSettings()
 		}
 	})
+}
+
+func (a *appState) removeFolder(path string) {
+	a.sources = slices.DeleteFunc(a.sources, func(source string) bool { return source == path })
+	a.scope = "custom"
+	a.saveSettings()
+	a.refresh()
 }
 
 func (a *appState) chooseFolder() {
