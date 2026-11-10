@@ -166,6 +166,8 @@ func (a *appState) browser(c *ui.Context, width float32) {
 		a.table.Selected = &a.selectedRow
 		a.table.Sort = &a.tableSort
 		a.table.Key = func(row int) any { return a.rows[row].ID() }
+		// Scan batches can insert sorted rows above the current viewport.
+		a.table.KeepOffset = true
 		a.table.CellMenu = func(m *ui.Menu, row, column int) {
 			a.selectedRow = row
 			face := a.rows[row]
