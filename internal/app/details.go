@@ -2,13 +2,10 @@ package app
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"fontlens/internal/fonts"
-	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -40,7 +37,6 @@ func (a *appState) releaseDetails() {
 	a.detailKey, a.detailError = "", ""
 	a.detailFace = nil
 	a.coverageCache, a.coverageLoading = nil, nil
-	a.glyphFaceID, a.glyphOutput, a.glyphCharacter = "", "", ""
 	a.rawFace, a.rawData = fonts.Entry{}, nil
 	a.rawViewOpen = false
 }
@@ -71,67 +67,6 @@ func (a *appState) ensureDetails(entry fonts.Entry) *fonts.Face {
 	return nil
 }
 
-func (a *appState) lookupGlyph(face fonts.Face) {
-	a.glyphFaceID = face.ID()
-	a.glyphCharacter = ""
-	a.glyphOutput = ""
-	input := strings.TrimSpace(a.glyphInput)
-	if input == "" {
-		return
-	}
-	var glyph uint16
-	if strings.HasPrefix(strings.ToLower(input), "gid:") {
-		value, err := strconv.ParseUint(strings.TrimSpace(input[4:]), 10, 16)
-		if err != nil {
-			a.glyphOutput = "字形 ID 应为 0–65535 的整数"
-			return
-		}
-		glyph = uint16(value)
-	} else {
-		var character rune
-		if strings.HasPrefix(strings.ToUpper(input), "U+") {
-			value, err := strconv.ParseUint(input[2:], 16, 32)
-			if err != nil || !utf8.ValidRune(rune(value)) {
-				a.glyphOutput = "请输入有效的 U+ 码位"
-				return
-			}
-			character = rune(value)
-		} else {
-			runes := []rune(input)
-			if len(runes) != 1 {
-				a.glyphOutput = "请输入单个字符、U+ 码位或 gid:字形 ID"
-				return
-			}
-			character = runes[0]
-		}
-		var err error
-		glyph, err = fonts.LookupGlyph(face.Path, face.Index, character)
-		if err != nil {
-			a.glyphOutput = err.Error()
-			return
-		}
-		if glyph == 0 {
-			a.glyphOutput = fmt.Sprintf("U+%04X · 未映射到字形", character)
-			return
-		}
-		a.glyphCharacter = string(character)
-		a.glyphOutput = fmt.Sprintf("%s · U+%04X · glyph ID %d", string(character), character, glyph)
-	}
-	if glyph >= face.Glyphs {
-		a.glyphOutput = fmt.Sprintf("glyph ID %d 超出字形总数 %d", glyph, face.Glyphs)
-		return
-	}
-	advance, bearing, err := fonts.GlyphMetrics(face.Path, face.Index, glyph)
-	if err != nil {
-		a.glyphOutput += " · " + err.Error()
-		return
-	}
-	if a.glyphCharacter == "" {
-		a.glyphOutput = fmt.Sprintf("glyph ID %d", glyph)
-	}
-	a.glyphOutput += fmt.Sprintf(" · 水平 advance %d · 左侧 bearing %d（设计单位）", advance, bearing)
-}
-
 func (a *appState) details(c *ui.Context) {
 	ui.Column(c).Fill().Padding(16).Gap(12).Children(func() {
 		ui.Text(c, "字体详细信息").FontSize(18).Bold()
@@ -148,9 +83,6 @@ func (a *appState) details(c *ui.Context) {
 				ui.Text(c, "正在加载字体详情…").TextColor(c.Theme().TextMuted)
 			}
 			return
-		}
-		if a.glyphFaceID != face.ID() {
-			a.lookupGlyph(*face)
 		}
 		a.initAxes(*face)
 		a.ensureCoverage(*face)
@@ -176,25 +108,6 @@ func (a *appState) details(c *ui.Context) {
 				a.previewView(c, face.Entry, a.previewSize, int(previewWidth), 0)
 			})
 			ui.Divider(c)
-			ui.Text(c, "字符与字形查询").Bold()
-			if ui.TextInput(c, &a.glyphInput).Placeholder("字符、U+4E00 或 gid:12").Changed() {
-				a.lookupGlyph(*face)
-			}
-			if a.glyphOutput != "" {
-				ui.Text(c, a.glyphOutput)
-			}
-			if a.glyphCharacter != "" {
-				a.syncPreviews(c, []fonts.Entry{face.Entry}, a.glyphCharacter, 64, 200, 90)
-				a.previewTextView(c, face.Entry, a.glyphCharacter, 64, 200, 90)
-				ui.Row(c).Gap(8).Children(func() {
-					if ui.Button(c, "复制字符").Clicked() {
-						mygo.Clipboard.WriteText(a.glyphCharacter)
-					}
-					if ui.Button(c, "复制码位").Clicked() {
-						mygo.Clipboard.WriteText(fmt.Sprintf("U+%04X", []rune(a.glyphCharacter)[0]))
-					}
-				})
-			}
 			if len(face.Axes) > 0 {
 				ui.Text(c, "可变字体轴").Bold()
 				if len(face.Instances) > 0 {
@@ -245,19 +158,14 @@ func (a *appState) details(c *ui.Context) {
 					}
 					a.selectedInstance[face.ID()] = ""
 				}
+				ui.Divider(c)
 			}
 			ui.Row(c).Gap(8).Children(func() {
 				ui.Text(c, "字符集覆盖").Bold().Grow(1)
-				if ui.Button(c, "导入字表").Clicked() {
-					a.chooseCharset()
-				}
 				if ui.Button(c, "字符集支持").Clicked() {
 					a.coveragePage = true
 				}
 			})
-			if a.charsetMessage != "" {
-				ui.Text(c, a.charsetMessage)
-			}
 			if !face.HasUnicodeCmap() {
 				ui.Text(c, "没有可用的 Unicode cmap").TextColor(c.Theme().TextMuted)
 			} else if result, ready := a.coverageCache[a.coverageCacheKey(face.Entry)]; ready {
@@ -278,6 +186,7 @@ func (a *appState) details(c *ui.Context) {
 			} else {
 				ui.Text(c, "正在计算覆盖统计…")
 			}
+			ui.Divider(c)
 			ui.SearchField(c, &a.detailsQuery).Placeholder("搜索名称记录、属性或表")
 			ui.Text(c, "字体属性").Bold()
 			group := ""
@@ -292,6 +201,7 @@ func (a *appState) details(c *ui.Context) {
 				}
 				ui.Text(c, line)
 			}
+			ui.Divider(c)
 			ui.Text(c, "名称记录").Bold()
 			for _, name := range face.Names {
 				language := fmt.Sprintf("%04X", name.Language)
@@ -307,6 +217,7 @@ func (a *appState) details(c *ui.Context) {
 					ui.Text(c, line)
 				}
 			}
+			ui.Divider(c)
 			ui.Text(c, "表目录").Bold()
 			offsetLabel := "文件偏移"
 			if face.Format == "WOFF" || face.Format == "WOFF2" {

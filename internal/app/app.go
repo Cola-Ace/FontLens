@@ -83,10 +83,6 @@ type appState struct {
 	axisValues        map[string]map[string]float64
 	selectedInstance  map[string]string
 	detailsQuery      string
-	glyphInput        string
-	glyphOutput       string
-	glyphFaceID       string
-	glyphCharacter    string
 }
 
 func (a *appState) view(c *ui.Context) {

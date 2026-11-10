@@ -118,7 +118,7 @@ func coverageRow(c *ui.Context, row coverage.Row) {
 	ui.Column(c).Padding(8, 4).Gap(2).Children(func() {
 		ui.Text(c, row.Name).SingleLine()
 		if row.Pending {
-			ui.Text(c, "待导入 · 使用上方按钮导入有版本的 UTF-8 字表").TextColor(c.Theme().TextMuted)
+			ui.Text(c, "待导入 · 可在“字符集支持”页导入字表").TextColor(c.Theme().TextMuted)
 			return
 		}
 		ui.Textf(c, "%d / %d · %.2f%% · 缺 %d", row.Covered, row.Total, row.Percent, row.Missing).TextColor(c.Theme().TextMuted)
