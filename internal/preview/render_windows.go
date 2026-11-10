@@ -22,7 +22,6 @@ import (
 	"github.com/go-text/typesetting/font"
 	"github.com/go-text/typesetting/font/opentype"
 	"github.com/go-text/typesetting/shaping"
-	"golang.org/x/image/draw"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -199,9 +198,9 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 	}
 	pixelWidth := int(math.Ceil(float64(float32(max(1, width)) * scale)))
 	pixelHeight := int(math.Ceil(float64(float32(height) * scale)))
-	// Sample outlines at twice the screen resolution, then average coverage.
-	result := image.NewRGBA(image.Rect(0, 0, pixelWidth*2, pixelHeight*2))
-	transform := directwrite.DWRITE_MATRIX{M11: scale * 2, M22: scale * 2}
+	// Rasterize at the display's pixel density so hinting survives unchanged.
+	bitmap := image.NewRGBA(image.Rect(0, 0, pixelWidth, pixelHeight))
+	transform := directwrite.DWRITE_MATRIX{M11: scale, M22: scale}
 	for lineIndex, line := range layout {
 		penX := float32(8)
 		baseline := size*1.25 + float32(lineIndex)*size*lineHeight
@@ -225,7 +224,7 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 			}
 			glyphRun := directwrite.DWRITE_GLYPH_RUN{FontFace: dwFace, FontEmSize: size, GlyphCount: uint32(len(ids)), GlyphIndices: &ids[0], GlyphAdvances: &advances[0], GlyphOffsets: &offsets[0]}
 			var analysis *directwrite.IDWriteGlyphRunAnalysis
-			if err := factory2.CreateGlyphRunAnalysis(&glyphRun, &transform, directwrite.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, directwrite.DWRITE_MEASURING_MODE_NATURAL, directwrite.DWRITE_GRID_FIT_MODE_DISABLED, directwrite.DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE, penX, baseline, &analysis); err != nil {
+			if err := factory2.CreateGlyphRunAnalysis(&glyphRun, &transform, directwrite.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, directwrite.DWRITE_MEASURING_MODE_NATURAL, directwrite.DWRITE_GRID_FIT_MODE_ENABLED, directwrite.DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE, penX, baseline, &analysis); err != nil {
 				return nil, err
 			}
 			var bounds foundation.RECT
@@ -234,7 +233,7 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 				alpha := make([]byte, int(bounds.Right-bounds.Left)*int(bounds.Bottom-bounds.Top))
 				err = analysis.CreateAlphaTexture(directwrite.DWRITE_TEXTURE_ALIASED_1x1, &bounds, alpha)
 				if err == nil {
-					paint(result, bounds, alpha, ink)
+					paint(bitmap, bounds, alpha, ink)
 				}
 			}
 			analysis.Release()
@@ -249,8 +248,6 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 			runtime.KeepAlive(offsets)
 		}
 	}
-	bitmap := image.NewRGBA(image.Rect(0, 0, pixelWidth, pixelHeight))
-	draw.BiLinear.Scale(bitmap, bitmap.Bounds(), result, result.Bounds(), draw.Src, nil)
 	return bitmap, nil
 }
 
