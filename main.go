@@ -179,7 +179,7 @@ func main() {
 	}
 	mygo.App.WhenReady(func() {
 		app.window = mygo.NewWindow(mygo.WindowOptions{
-			Title: "字镜 · FontLens", Width: defaultWindowWidth, Height: 900, MinWidth: 1024, MinHeight: 720, StateKey: "main",
+			Title: "FontLens", Width: defaultWindowWidth, Height: 900, MinWidth: 1024, MinHeight: 720, StateKey: "main",
 			Content: ui.View(app.view),
 		})
 		app.refresh()
@@ -1446,7 +1446,6 @@ func (a *appState) treeChildren(node string) []string {
 
 func (a *appState) sidebar(c *ui.Context) {
 	ui.Column(c).Fill().Padding(8, 12).Gap(12).Children(func() {
-		ui.Text(c, "字镜").FontSize(24).Bold()
 		ui.Text(c, "字体目录").TextColor(c.Theme().TextMuted)
 		for row := 0; row < a.tree.Rows(); row++ {
 			if a.tree.Item(row) == a.scope {
