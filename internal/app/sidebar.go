@@ -70,7 +70,7 @@ func (a *appState) sidebar(c *ui.Context) {
 					label = filepath.Base(node)
 				}
 			}
-			ui.Row(c).Grow(1).MinWidth(0).Height(22).Padding(0, 6, 0, 0).Gap(4).AlignItems(ui.Center).Children(func() {
+			row := ui.Row(c).Grow(1).MinWidth(0).Height(22).Padding(0, 6, 0, 0).Gap(4).AlignItems(ui.Center).Children(func() {
 				if icon != "" {
 					ui.Text(c, icon).Font("Segoe MDL2 Assets").FontSize(13).Width(16).Shrink(0)
 				} else {
@@ -93,13 +93,17 @@ func (a *appState) sidebar(c *ui.Context) {
 				ui.Text(c, label).FontSize(12).SingleLine().Grow(1).MinWidth(0).Tooltip(label)
 				ui.Textf(c, "%d", a.count(node)).FontSize(12).SingleLine().Shrink(0)
 			})
+			if node == "custom" {
+				row.ContextMenu(func(m *ui.Menu) {
+					if m.Item("添加文件夹…").Chosen() {
+						a.chooseFolder()
+					}
+				})
+			}
 		}).Grow(1).Changed() {
 			a.scope = a.tree.Item(a.treeRow)
 			a.rebuild()
 			a.saveSettings()
-		}
-		if ui.Button(c, "添加文件夹").Clicked() {
-			a.chooseFolder()
 		}
 		if ui.Button(c, "刷新").Clicked() {
 			a.refresh()
