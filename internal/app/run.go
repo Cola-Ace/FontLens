@@ -53,8 +53,12 @@ func Run() {
 		}
 	}
 	mygo.App.WhenReady(func() {
+		workArea := mygo.Screen.PrimaryDisplay().WorkArea
+		width := min(defaultWindowWidth, workArea.Width*9/10)
+		height := min(900, workArea.Height*9/10)
 		app.window = mygo.NewWindow(mygo.WindowOptions{
-			Title: "FontLens", Width: defaultWindowWidth, Height: 900, MinWidth: 1024, MinHeight: 720, StateKey: "main",
+			Title: "FontLens", Width: width, Height: height,
+			MinWidth: min(1024, width), MinHeight: min(720, height),
 			Content: ui.View(app.view),
 		})
 		app.refresh()

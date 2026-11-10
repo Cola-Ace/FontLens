@@ -111,10 +111,9 @@ func (a *appState) view(c *ui.Context) {
 	}
 	width, _ := c.Size()
 	leftWidth, centerWidth := a.leftWidth, a.centerWidth
-	if width >= 1024 {
-		leftWidth = min(leftWidth, width-800)
-		centerWidth = min(centerWidth, width-leftWidth-280-2)
-	}
+	paneScale := min(float32(1), width/1024)
+	leftWidth = min(leftWidth, width-800*paneScale)
+	centerWidth = min(centerWidth, width-leftWidth-280*paneScale-2)
 	if ui.Split(c, &leftWidth, func() { a.sidebar(c) }, func() {
 		if ui.Split(c, &centerWidth, func() { a.browser(c, centerWidth) }, func() { a.details(c) }).Fill().Changed() {
 			a.centerWidth = centerWidth
