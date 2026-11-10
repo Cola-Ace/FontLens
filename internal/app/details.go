@@ -165,6 +165,17 @@ func (a *appState) details(c *ui.Context) {
 			ui.Textf(c, "PostScript: %s", face.PostScript)
 			ui.Textf(c, "字形数: %d · Unicode 映射码位: %d", face.Glyphs, face.Characters.Count())
 			ui.Textf(c, "采用 cmap: %s", face.Cmap)
+			ui.Divider(c)
+			preview := ui.Column(c)
+			previewWidth := preview.LayoutBounds().W
+			if previewWidth <= 0 {
+				previewWidth = defaultDetailWidth - 32
+			}
+			preview.Children(func() {
+				a.syncPreviews(c, []fonts.Entry{face.Entry}, a.previewText, a.previewSize, int(previewWidth), 0)
+				a.previewView(c, face.Entry, a.previewSize, int(previewWidth), 0)
+			})
+			ui.Divider(c)
 			ui.Text(c, "字符与字形查询").Bold()
 			if ui.TextInput(c, &a.glyphInput).Placeholder("字符、U+4E00 或 gid:12").Changed() {
 				a.lookupGlyph(*face)

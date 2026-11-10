@@ -30,8 +30,9 @@ var renderSlots = make(chan struct{}, 2)
 const maxPreviewBitmapBytes = 8 << 20
 
 // A zero width renders a complete single line at its natural width.
+// A zero height with a positive width fits the wrapped text's height.
 func Render(ctx context.Context, path string, faceIndex int, axes map[string]float32, sample string, size, lineHeight float32, width, height int, scale float32, ink color.RGBA) (*image.RGBA, error) {
-	if width < 0 || height <= 0 || size <= 0 || scale <= 0 {
+	if width < 0 || height < 0 || width == 0 && height == 0 || size <= 0 || scale <= 0 {
 		return nil, fmt.Errorf("invalid preview dimensions")
 	}
 	if strings.ContainsRune(sample, 0) {
@@ -190,7 +191,11 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 	}
 	var layout *directwrite.IDWriteTextLayout
 	textLength := uint32(len(utf16.Encode([]rune(sample))))
-	if err := factory.CreateTextLayout(sample, textLength, format, layoutWidth, float32(height), &layout); err != nil {
+	layoutHeight := float32(height)
+	if height == 0 {
+		layoutHeight = 1 << 20
+	}
+	if err := factory.CreateTextLayout(sample, textLength, format, layoutWidth, layoutHeight, &layout); err != nil {
 		return nil, err
 	}
 	defer layout.Release()
@@ -230,20 +235,36 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 			return nil, err
 		}
 	}
-	if width == 0 {
+	var originY float32
+	if width == 0 || height == 0 {
 		var metrics directwrite.DWRITE_TEXT_METRICS
 		if err := layout.GetMetrics(&metrics); err != nil {
 			return nil, err
 		}
-		width = int(math.Ceil(float64(metrics.WidthIncludingTrailingWhitespace))) + 16
+		if width == 0 {
+			width = int(math.Ceil(float64(metrics.WidthIncludingTrailingWhitespace))) + 16
+		}
+		if height == 0 {
+			if err := layout.SetMaxHeight(max(1, metrics.Height)); err != nil {
+				return nil, err
+			}
+			var overhang directwrite.DWRITE_OVERHANG_METRICS
+			if err := layout.GetOverhangMetrics(&overhang); err != nil {
+				return nil, err
+			}
+			inkTop := -overhang.Top
+			inkHeight := max(0, metrics.Height+overhang.Bottom-inkTop)
+			height = max(1, int(math.Ceil(float64(max(metrics.Height, inkHeight)))))
+			originY = (float32(height)-inkHeight)/2 - inkTop
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return drawLayout(ctx, layout, missing, width, height, scale, ink)
+	return drawLayout(ctx, layout, missing, width, height, originY, scale, ink)
 }
 
-func drawLayout(ctx context.Context, layout *directwrite.IDWriteTextLayout, missing []directwrite.DWRITE_TEXT_RANGE, width, height int, scale float32, ink color.RGBA) (*image.RGBA, error) {
+func drawLayout(ctx context.Context, layout *directwrite.IDWriteTextLayout, missing []directwrite.DWRITE_TEXT_RANGE, width, height int, originY, scale float32, ink color.RGBA) (*image.RGBA, error) {
 	pixelWidth := int(math.Ceil(float64(float32(max(1, width)) * scale)))
 	pixelHeight := int(math.Ceil(float64(float32(height) * scale)))
 	if float64(pixelWidth)*float64(pixelHeight)*4 > maxPreviewBitmapBytes {
@@ -292,7 +313,7 @@ func drawLayout(ctx context.Context, layout *directwrite.IDWriteTextLayout, miss
 	target.SetTextAntialiasMode(direct2d.D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE)
 	target.BeginDraw()
 	target.Clear(&common.D2D1_COLOR_F{})
-	target.DrawTextLayout(common.D2D_POINT_2F{X: 8}, layout, &brush.ID2D1Brush, direct2d.D2D1_DRAW_TEXT_OPTIONS_NONE)
+	target.DrawTextLayout(common.D2D_POINT_2F{X: 8, Y: originY}, layout, &brush.ID2D1Brush, direct2d.D2D1_DRAW_TEXT_OPTIONS_NONE)
 	if err := target.EndDraw(nil, nil); err != nil {
 		return nil, err
 	}

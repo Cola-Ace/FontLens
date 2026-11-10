@@ -205,11 +205,16 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 			a.previewLast[slot] = bitmap
 		}
 		displayWidth := float32(width)
+		displayHeight := float32(height)
 		if width == 0 {
 			displayWidth, _ = ui.ImageSize(bitmap)
 			displayWidth /= scale
 		}
-		image := ui.Image(c, bitmap).Size(displayWidth, float32(height)).Fit(ui.Contain)
+		if height == 0 {
+			_, displayHeight = ui.ImageSize(bitmap)
+			displayHeight /= scale
+		}
+		image := ui.Image(c, bitmap).Size(displayWidth, displayHeight).Fit(ui.Contain)
 		if width == 0 {
 			image.Shrink(0)
 		}
@@ -218,16 +223,21 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 		return ui.Text(c, message).TextColor(c.Theme().TextMuted).SingleLine()
 	} else if bitmap := a.previewLast[slot]; bitmap != nil {
 		displayWidth := float32(width)
+		displayHeight := float32(height)
 		if width == 0 {
 			displayWidth, _ = ui.ImageSize(bitmap)
 			displayWidth /= scale
 		}
-		box := ui.Box(c).Size(displayWidth, float32(height))
+		if height == 0 {
+			_, displayHeight = ui.ImageSize(bitmap)
+			displayHeight /= scale
+		}
+		box := ui.Box(c).Size(displayWidth, displayHeight)
 		if width == 0 {
 			box.Shrink(0)
 		}
 		return box.Children(func() {
-			ui.Image(c, bitmap).Size(displayWidth, float32(height)).Fit(ui.Contain)
+			ui.Image(c, bitmap).Size(displayWidth, displayHeight).Fit(ui.Contain)
 			ui.Text(c, "更新中…").Absolute().Right(4).Bottom(2).FontSize(12).TextColor(c.Theme().TextMuted)
 		})
 	} else {

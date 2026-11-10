@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"image"
 	"image/color"
 	"math"
 	"os"
@@ -242,6 +243,35 @@ func checkFont(path, sample string) error {
 		}
 	}
 	for _, scale := range []float32{1, 1.25, 1.5, 2} {
+		short, err := preview.Render(context.Background(), path, 0, nil, "A", 28, 1.4, 260, 0, scale, color.RGBA{A: 255})
+		if err != nil {
+			return fmt.Errorf("auto-height preview at %g×: %w", scale, err)
+		}
+		longText := strings.Repeat("FontLens 123 ", 8)
+		tall, err := preview.Render(context.Background(), path, 0, nil, longText, 28, 1.4, 260, 0, scale, color.RGBA{A: 255})
+		if err != nil {
+			return fmt.Errorf("auto-height wrapped preview at %g×: %w", scale, err)
+		}
+		wide, err := preview.Render(context.Background(), path, 0, nil, longText, 28, 1.4, 520, 0, scale, color.RGBA{A: 255})
+		if err != nil {
+			return fmt.Errorf("auto-height wide preview at %g×: %w", scale, err)
+		}
+		if short.Rect.Dy() <= 0 || tall.Rect.Dy() <= short.Rect.Dy() || wide.Rect.Dy() >= tall.Rect.Dy() || tall.Rect.Dx() != int(math.Ceil(float64(260*scale))) {
+			return fmt.Errorf("auto-height preview at %g× did not adapt to text and width", scale)
+		}
+		for _, centered := range []*image.RGBA{short, tall, wide} {
+			top, bottom := centered.Rect.Dy(), -1
+			for y := 0; y < centered.Rect.Dy(); y++ {
+				for x := 0; x < centered.Rect.Dx(); x++ {
+					if centered.RGBAAt(x, y).A > 0 {
+						top, bottom = min(top, y), max(bottom, y)
+					}
+				}
+			}
+			if bottom >= top && math.Abs(float64(top-(centered.Rect.Dy()-1-bottom))) > 2 {
+				return fmt.Errorf("auto-height preview at %g× is not vertically centered", scale)
+			}
+		}
 		wrapped, err := preview.Render(context.Background(), path, 0, nil, strings.Repeat(sample+" ", 8), 28, 1.4, 260, 150, scale, color.RGBA{R: 35, G: 39, B: 46, A: 255})
 		if err != nil {
 			return fmt.Errorf("wrapped preview at %g×: %w", scale, err)
