@@ -126,6 +126,7 @@ func (a *appState) sidebar(c *ui.Context) {
 		}).Grow(1).Changed() {
 			a.scope = a.tree.Item(a.treeRow)
 			a.rebuild()
+			a.table.ScrollTo(0, ui.Start)
 			a.saveSettings()
 		}
 		if ui.Button(c, "刷新").Clicked() {
