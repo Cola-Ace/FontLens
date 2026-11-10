@@ -179,6 +179,13 @@ func (a *appState) refresh() {
 					for index, face := range a.faces {
 						a.faceIndex[face.ID()] = index
 					}
+					a.compareIDs = slices.DeleteFunc(a.compareIDs, func(id string) bool {
+						_, exists := a.faceIndex[id]
+						return !exists
+					})
+					if len(a.compareIDs) < 4 {
+						a.compareLimit = false
+					}
 					a.recount()
 				}
 				a.scanning = false
