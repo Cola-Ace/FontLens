@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <title>FontLens · 字镜</title>
+  <defs>
+    <linearGradient id="tile" x1="144" y1="80" x2="858" y2="944" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4C9BC8"/>
+      <stop offset="0.42" stop-color="#3388BB"/>
+      <stop offset="1" stop-color="#174C70"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="280" y1="224" x2="692" y2="704" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#77BBDD"/>
+      <stop offset="0.38" stop-color="#EAF6FC"/>
+      <stop offset="0.66" stop-color="#F9E8F0"/>
+      <stop offset="1" stop-color="#FF8899"/>
+    </linearGradient>
+    <linearGradient id="handle" x1="642" y1="642" x2="792" y2="792" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF8899"/>
+      <stop offset="1" stop-color="#7777AA"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#tile)"/>
+  <rect x="66" y="66" width="892" height="892" rx="206" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="4"/>
+  <path d="M630 630L780 780" stroke="#123C58" stroke-opacity="0.32" stroke-width="92" stroke-linecap="round" transform="translate(0 12)"/>
+  <path d="M630 630L780 780" stroke="url(#handle)" stroke-width="80" stroke-linecap="round"/>
+  <circle cx="456" cy="456" r="236" fill="#174C70" fill-opacity="0.2" stroke="url(#rim)" stroke-width="52"/>
+  <path d="M328 300H594V398H560L546 336H454V442H500L510 408H540V514H510L500 478H454V576H506V612H328V576H370V336H328V300Z" transform="translate(46 46) scale(0.9)" fill="#FFFFFF"/>
+</svg>
