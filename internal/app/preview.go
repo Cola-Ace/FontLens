@@ -59,18 +59,16 @@ func (a *appState) previewToolbar(c *ui.Context) {
 	ui.Row(c).Gap(8).Children(func() {
 		if ui.TextInput(c, &a.previewText).Placeholder("输入预览文案").Grow(1).Changed() {
 			a.previewPreset = "自定义"
+			a.customPreviewText = a.previewText
+			a.saveSettings()
 		}
 		labels := []string{"自定义"}
 		for _, preset := range preview.Presets {
 			labels = append(labels, preset.Label)
 		}
 		if ui.Select(c, &a.previewPreset, labels).Changed() {
-			for _, preset := range preview.Presets {
-				if preset.Label == a.previewPreset {
-					a.previewText = preset.Text
-					break
-				}
-			}
+			a.selectPreviewPreset(a.previewPreset)
+			a.saveSettings()
 		}
 	})
 	ui.Row(c).Gap(8).Children(func() {
@@ -89,6 +87,18 @@ func (a *appState) previewToolbar(c *ui.Context) {
 			a.previewLineHeight = min(2.0, a.previewLineHeight+0.1)
 		}
 	})
+}
+
+func (a *appState) selectPreviewPreset(label string) {
+	a.previewPreset = "自定义"
+	a.previewText = a.customPreviewText
+	for _, preset := range preview.Presets {
+		if preset.Label == label {
+			a.previewPreset = label
+			a.previewText = preset.Text
+			break
+		}
+	}
 }
 
 func (a *appState) previewKey(face fonts.Entry, sample string, size float32, width, height int, scale float32, ink color.RGBA) string {

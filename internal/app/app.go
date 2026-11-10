@@ -61,6 +61,7 @@ type appState struct {
 	coverageSplit     float32
 	previewText       string
 	previewPreset     string
+	customPreviewText string
 	previewSize       float32
 	previewLineHeight float32
 	previewBitmaps    map[string]*ui.Bitmap

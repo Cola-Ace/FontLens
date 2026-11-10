@@ -38,7 +38,7 @@ func Run() {
 	if os.Getenv("MYGO_GPU") == "" {
 		os.Setenv("MYGO_GPU", "0")
 	}
-	app := &appState{leftWidth: defaultLeftWidth, centerWidth: defaultCenterWidth, coverageSplit: 50, scope: "all", selectedRow: -1, previewText: "FontLens 123", previewPreset: "自定义", previewSize: 30, previewLineHeight: 1.5}
+	app := &appState{leftWidth: defaultLeftWidth, centerWidth: defaultCenterWidth, coverageSplit: 50, scope: "all", selectedRow: -1, previewText: "FontLens 123", previewPreset: "自定义", customPreviewText: "FontLens 123", previewSize: 30, previewLineHeight: 1.5}
 	app.sortMode = 1
 	app.tableSort = ui.SortOrder{Column: "name"}
 	app.sortSeen = app.tableSort

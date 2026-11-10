@@ -10,16 +10,18 @@ import (
 )
 
 type settings struct {
-	Sources         []string              `json:"sources"`
-	Scope           string                `json:"scope"`
-	Open            []string              `json:"open"`
-	Charsets        []coverage.Definition `json:"charsets"`
-	CharsetRevision int64                 `json:"charsetRevision"`
-	ThemeMode       int                   `json:"themeMode"`
-	LeftWidth       float32               `json:"leftWidth,omitempty"`
-	CenterWidth     float32               `json:"centerWidth,omitempty"`
-	CoverageSplit   float32               `json:"coverageSplit,omitempty"`
-	TableWidths     map[string]float32    `json:"tableWidths,omitempty"`
+	Sources           []string              `json:"sources"`
+	Scope             string                `json:"scope"`
+	Open              []string              `json:"open"`
+	Charsets          []coverage.Definition `json:"charsets"`
+	CharsetRevision   int64                 `json:"charsetRevision"`
+	ThemeMode         int                   `json:"themeMode"`
+	LeftWidth         float32               `json:"leftWidth,omitempty"`
+	CenterWidth       float32               `json:"centerWidth,omitempty"`
+	CoverageSplit     float32               `json:"coverageSplit,omitempty"`
+	TableWidths       map[string]float32    `json:"tableWidths,omitempty"`
+	PreviewPreset     string                `json:"previewPreset"`
+	CustomPreviewText string                `json:"customPreviewText"`
 }
 
 func settingsPath() string {
@@ -49,6 +51,10 @@ func (a *appState) loadSettings() {
 		}
 		a.charsets = saved.Charsets
 		a.charsetRevision = saved.CharsetRevision
+		if saved.PreviewPreset != "" {
+			a.customPreviewText = saved.CustomPreviewText
+			a.selectPreviewPreset(saved.PreviewPreset)
+		}
 		if saved.ThemeMode >= 0 && saved.ThemeMode <= 2 {
 			a.themeMode = saved.ThemeMode
 		}
@@ -96,6 +102,7 @@ func (a *appState) saveSettings() {
 		LeftWidth: a.leftWidth, CenterWidth: a.centerWidth,
 		CoverageSplit: a.coverageSplit,
 		TableWidths:   a.table.Columns.Widths,
+		PreviewPreset: a.previewPreset, CustomPreviewText: a.customPreviewText,
 	}, "", "  ")
 	if err == nil {
 		_ = os.WriteFile(path, data, 0600)
