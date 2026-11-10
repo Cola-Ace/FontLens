@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"math"
 	"slices"
 
 	"fontlens/internal/fonts"
@@ -15,6 +16,7 @@ import (
 
 type previewRequest struct {
 	cancel context.CancelFunc
+	hint   *loadingHint
 }
 
 func (a *appState) compareView(c *ui.Context) {
@@ -127,7 +129,7 @@ func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, 
 		return key
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	request := &previewRequest{cancel: cancel}
+	request := &previewRequest{cancel: cancel, hint: newLoadingHint(a.window)}
 	a.previewLoading[key] = request
 	lineHeight := a.previewLineHeight
 	axes := make(map[string]float32)
@@ -142,6 +144,7 @@ func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, 
 		}
 		a.window.Update(func() {
 			defer cancel()
+			request.hint.finish()
 			if a.previewLoading[key] != request {
 				return
 			}
@@ -172,6 +175,7 @@ func (a *appState) cancelPreviews(wanted map[string]bool) {
 	}
 	for key, request := range a.previewLoading {
 		if !wanted[key] {
+			request.hint.finish()
 			request.cancel()
 			delete(a.previewLoading, key)
 		}
@@ -184,9 +188,6 @@ func (a *appState) cancelPreviews(wanted map[string]bool) {
 }
 
 func (a *appState) syncPreviews(c *ui.Context, faces []fonts.Entry, sample string, size float32, width, height int) {
-	textColor := c.Theme().Text
-	ink := color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255}
-	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
 	for _, face := range faces {
 		text := sample
 		if width == 0 {
@@ -195,21 +196,42 @@ func (a *appState) syncPreviews(c *ui.Context, faces []fonts.Entry, sample strin
 				continue
 			}
 		}
-		a.previewWanted[a.previewKey(face, text, size, width, height, scale, ink)] = true
-		a.previewSlots[fmt.Sprintf("%s:%d:%d:%d:%d:%d", face.ID(), width, height, ink.R, ink.G, ink.B)] = true
-		a.ensurePreview(face, text, size, width, height, scale, ink)
+		a.syncPreview(c, face, text, size, width, height)
 	}
+}
+
+func (a *appState) syncPreview(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) string {
+	textColor := c.Theme().Text
+	ink := color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255}
+	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
+	key := a.ensurePreview(face, sample, size, width, height, scale, ink)
+	a.previewWanted[key] = true
+	a.previewSlots[previewSlot(face, width, height, ink)] = true
+	return key
 }
 
 func (a *appState) previewView(c *ui.Context, face fonts.Entry, size float32, width, height int) {
 	a.previewTextView(c, face, a.previewText, size, width, height)
 }
 
+func previewSlot(face fonts.Entry, width, height int, ink color.RGBA) string {
+	view, id := "list", face.ID()
+	if width > 0 {
+		view = "compare"
+		if height == 0 {
+			view = "details"
+		}
+	}
+	return fmt.Sprintf("%s:%s:%d:%d:%d", view, id, ink.R, ink.G, ink.B)
+}
+
 func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) ui.Element {
 	textColor := c.Theme().Text
 	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
 	key := a.previewKey(face, sample, size, width, height, scale, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
-	slot := fmt.Sprintf("%s:%d:%d:%d:%d:%d", face.ID(), width, height, textColor.R, textColor.G, textColor.B)
+	slot := previewSlot(face, width, height, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
+	request := a.previewLoading[key]
+	loading := request != nil && request.hint.show()
 	if bitmap := a.previewBitmaps[key]; bitmap != nil {
 		if a.previewSlots[slot] {
 			a.previewLast[slot] = bitmap
@@ -248,9 +270,23 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 		}
 		return box.Children(func() {
 			ui.Image(c, bitmap).Size(displayWidth, displayHeight).Fit(ui.Contain)
-			ui.Text(c, "更新中…").Absolute().Right(4).Bottom(2).FontSize(12).TextColor(c.Theme().TextMuted)
+			if loading {
+				ui.Text(c, "更新中…").Absolute().Right(4).Bottom(2).FontSize(12).TextColor(c.Theme().TextMuted)
+			}
 		})
 	} else {
-		return ui.Text(c, "预览生成中…").TextColor(c.Theme().TextMuted)
+		displayHeight := float32(height)
+		if height == 0 {
+			displayHeight = float32(math.Ceil(float64(size * a.previewLineHeight)))
+		}
+		box := ui.Box(c).Height(displayHeight)
+		if width > 0 {
+			box.Width(float32(width))
+		}
+		return box.Children(func() {
+			if loading {
+				ui.Text(c, "预览生成中…").TextColor(c.Theme().TextMuted)
+			}
+		})
 	}
 }
