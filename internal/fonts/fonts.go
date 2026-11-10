@@ -395,6 +395,12 @@ func preferredName(records []NameRecord, id uint16) string {
 		default:
 			n = 1
 		}
+		if id == 1 && (strings.EqualFold(record.LanguageTag, "en") ||
+			strings.HasPrefix(strings.ToLower(record.LanguageTag), "en-") ||
+			record.Platform == 3 && record.Language < 0x8000 && record.Language&0x03FF == 0x0009 ||
+			record.Platform == 1 && record.Language == 0) {
+			n += 4
+		}
 		if n > score {
 			best, score = record.Value, n
 		}
