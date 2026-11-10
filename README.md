@@ -1,6 +1,6 @@
 # 字镜 · FontLens
 
-字镜是 Windows 11 x64 的离线字体浏览工具。原生三栏界面通过 DirectWrite 枚举系统字体，按字体面列出系统及自定义目录中的 TTF、OTF、TTC、OTC、WOFF 和 WOFF2 文件。列表使用字体自身显示固定的 Family Name，详情字样绑定具体文件及集合面；字体对比支持自定义文案、文学预设、字号与行距调整，可调节可变字体轴，并选择 2–4 款字体并排对比。支持全名搜索、格式筛选、自然排序、名称记录、原始表目录及 GB2312、GBK、Unicode 17.0 覆盖统计，也可导入 UTF-8 字表。
+字镜是 Windows 11 x64 的离线字体浏览工具。原生三栏界面通过 DirectWrite 枚举系统字体，按字体面列出系统及自定义目录中的 TTF、OTF、TTC、OTC、WOFF 和 WOFF2 文件。列表使用字体自身显示固定的 Family Name，详情字样绑定具体文件及集合面；字体对比支持自定义文案、文学预设、字号与行距调整，可调节可变字体轴，并选择 2–4 款字体并排对比。支持全名搜索、格式筛选、自然排序、名称记录、原始表目录及 GB2312、GBK、GB18030、通用规范汉字表、Big5/HKSCS、日韩字表与 Unicode 17.0 覆盖统计，也可导入 UTF-8 字表。
 
 ## 使用
 
@@ -28,4 +28,4 @@ go tool mygo build -platform windows/amd64 -skip-installer
 
 ## 数据与许可
 
-项目源码采用 MIT 许可证。内置的 GB2312/GBK 字符集合由 Python 3.12 标准编解码映射生成，分别保存在 `internal/coverage/data/gb2312.txt` 和 `gbk.txt`。缺少确定版本数据的其他字表标为“待导入”。Unicode 区块范围由 `@unicode/unicode-17.0.0` v2.1.0 数据生成，分母按 Go 1.27.3 的 Unicode 17.0.0 分类表排除未分配、代理和私用码位；私用区单列。文学预览文案的原作和出处见 [预览文案出处](docs/PREVIEW_TEXTS.md)。第三方许可在 `third_party/licenses/` 查看。字体文件的许可由其各自权利人规定。
+项目源码采用 MIT 许可证。内置字表保存在 `internal/coverage/data/`，包含 GB18030-2022（级别 3 含 2024 年修改单）、2013 年通用规范汉字表、Big5、HKSCS-2016、JIS X 0208:1990、JIS X 0213:2004、KS X 1001:1992 与完整现代韩文音节；版本、计数口径、来源和再生成方法见 [内置字表](docs/CHARSETS.md)。Unicode 区块范围由 `@unicode/unicode-17.0.0` v2.1.0 数据生成，分母按 Go 1.27.3 的 Unicode 17.0.0 分类表排除未分配、代理和私用码位；私用区单列。文学预览文案的原作和出处见 [预览文案出处](docs/PREVIEW_TEXTS.md)。第三方许可在 `third_party/licenses/` 查看。字体文件的许可由其各自权利人规定。

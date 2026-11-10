@@ -17,6 +17,45 @@ var gb2312 string
 //go:embed data/gbk.txt
 var gbk string
 
+//go:embed data/gb18030-2022-1.txt
+var gb18030Level1 string
+
+//go:embed data/gb18030-2022-2.txt
+var gb18030Level2 string
+
+//go:embed data/gb18030-2022-3.txt
+var gb18030Level3 string
+
+//go:embed data/tgh-2013.txt
+var tgh string
+
+//go:embed data/tgh-2013-1.txt
+var tghLevel1 string
+
+//go:embed data/tgh-2013-2.txt
+var tghLevel2 string
+
+//go:embed data/tgh-2013-3.txt
+var tghLevel3 string
+
+//go:embed data/big5.txt
+var big5 string
+
+//go:embed data/hkscs-2016.txt
+var hkscs string
+
+//go:embed data/jis0208-1990.txt
+var jis0208 string
+
+//go:embed data/jis0213-2004.txt
+var jis0213 string
+
+//go:embed data/ks1001-1992.txt
+var ks1001 string
+
+//go:embed data/hangul-syllables.txt
+var hangul string
+
 //go:embed data/blocks-17.tsv
 var blockData string
 
@@ -127,10 +166,19 @@ func Builtin(characters codepoints.Set) []Row {
 	return []Row{
 		measure("GB2312 汉字集", gb2312, characters),
 		measure("GBK 汉字集", gbk, characters),
-		{Name: "GB18030 分级字表（版本与等级待导入）", Pending: true},
-		{Name: "通用规范汉字表（版本待导入）", Pending: true},
-		{Name: "Big5 / HKSCS 字表（版本待导入）", Pending: true},
-		{Name: "日韩字表（版本待导入）", Pending: true},
+		measure("GB18030-2022 级别 1（汉字及部首）", gb18030Level1, characters),
+		measure("GB18030-2022 级别 2（汉字及部首）", gb18030Level2, characters),
+		measure("GB18030-2022 级别 3（2024 修订）", gb18030Level3, characters),
+		measure("通用规范汉字表（2013，全部）", tgh, characters),
+		measure("通用规范汉字表（2013，一级）", tghLevel1, characters),
+		measure("通用规范汉字表（2013，二级）", tghLevel2, characters),
+		measure("通用规范汉字表（2013，三级）", tghLevel3, characters),
+		measure("Big5 字符集（Python 3.12 映射）", big5, characters),
+		measure("HKSCS-2016 增补字符集", hkscs, characters),
+		measure("日文 JIS X 0208:1990", jis0208, characters),
+		measure("日文 JIS X 0213:2004", jis0213, characters),
+		measure("韩文 KS X 1001:1992", ks1001, characters),
+		measure("韩文音节（Unicode 17.0）", hangul, characters),
 	}
 }
 

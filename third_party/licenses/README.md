@@ -14,5 +14,13 @@
 | modernc.org/libc 与传递依赖 | v1.80.1 | modernc-libc-BSD-3-Clause.txt、modernc-libc-THIRD-PARTY.md |
 | golang.org/x/image、x/net、x/text | v0.46.0、v0.59.0、v0.43.0 | Go-BSD-3-Clause.txt |
 | Unicode 17.0 区块范围数据，源于 @unicode/unicode-17.0.0 v2.1.0 | v2.1.0 | Unicode-blocks-MIT.txt、Unicode-LICENSE.txt |
+| Unicode Unihan 通规表序号、JIS X 0208 映射 | Unicode 17.0、JIS0208.TXT v2.0 | Unicode-LICENSE.txt |
+| Unicode KS C 5601 / KS X 1001 映射 | KSC5601.TXT v1.1 | Unicode-KSC5601-NOTICE.txt、Unicode-LICENSE.txt |
+| ICU GB18030-2022 部首映射 | release-76-1 | ICU-LICENSE.txt |
+| Project X0213 标准映射 | 2009-05-03 | Project-X0213-LICENSE.txt |
+| CPython Big5 映射 | Python 3.12 | Python-LICENSE.txt |
+| HKSCS-2016 开放数据 | 数字政策办公室 JSON，含 2018 年映射修订 | DATA-GOV-HK-NOTICE.md |
 
 GB2312 和 GBK 汉字集合由 Python 3.12 的相应字符编码映射生成，仅保存码位集合。
+
+新增字表的数据来源、范围及生成方法见 [内置字表](../../docs/CHARSETS.md)。

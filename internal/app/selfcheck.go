@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode"
 
+	"fontlens/internal/codepoints"
 	"fontlens/internal/coverage"
 	"fontlens/internal/fonts"
 	"fontlens/internal/preview"
@@ -45,11 +46,31 @@ func selfCheck(fontPath, sample string) error {
 		return fmt.Errorf("Unicode version: %s", unicode.Version)
 	}
 	result := coverage.Analyze(nil)
-	if result.Charsets[0].Total != 6763 || result.Charsets[1].Total != 20923 {
-		return fmt.Errorf("charset denominator mismatch")
+	expectedTotals := []int{6763, 20923, 27584, 27780, 97908, 8105, 3500, 3000, 1605, 13706, 5033, 6879, 11209, 8224, 11172}
+	if len(result.Charsets) != len(expectedTotals) {
+		return fmt.Errorf("builtin charset count mismatch")
 	}
-	if !result.Charsets[2].Pending || result.Charsets[2].Total != 0 {
-		return fmt.Errorf("pending charset status mismatch")
+	for i, total := range expectedTotals {
+		row := result.Charsets[i]
+		if row.Pending || row.Total != total || row.Covered != 0 || row.Missing != total || row.Percent != 0 {
+			return fmt.Errorf("charset denominator mismatch: %s", row.Name)
+		}
+	}
+	allCharacters := codepoints.Set{{First: 0, Last: unicode.MaxRune}}
+	for _, row := range coverage.Builtin(allCharacters) {
+		if row.Covered != row.Total || row.Missing != 0 || row.Percent != 100 {
+			return fmt.Errorf("full charset coverage mismatch: %s", row.Name)
+		}
+	}
+	// A supplementary-plane character must contribute to coverage as one codepoint.
+	for _, row := range coverage.Builtin(codepoints.New([]rune{'\U00020000'})) {
+		want := 0
+		if strings.HasPrefix(row.Name, "GB18030-2022 级别 3") {
+			want = 1
+		}
+		if row.Covered != want {
+			return fmt.Errorf("supplementary charset coverage mismatch: %s", row.Name)
+		}
 	}
 	foundBlock := false
 	for _, row := range result.Blocks {

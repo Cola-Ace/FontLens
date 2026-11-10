@@ -17,7 +17,7 @@ func coverageKey(face fonts.Entry) string {
 }
 
 func (a *appState) coverageCacheKey(face fonts.Entry) string {
-	return fmt.Sprintf("%s:charsets:%d", coverageKey(face), a.charsetRevision)
+	return fmt.Sprintf("%s:charsets:v2:%d", coverageKey(face), a.charsetRevision)
 }
 
 func (a *appState) ensureCoverage(face fonts.Face) {
