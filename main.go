@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -97,10 +98,11 @@ type appState struct {
 	previewPreset     string
 	previewSize       float32
 	previewLineHeight float32
-	previewCache      map[string]*ui.Bitmap
+	previewBitmaps    map[string]*ui.Bitmap
 	previewLast       map[string]*ui.Bitmap
 	previewLoading    map[string]*previewRequest
 	previewWanted     map[string]bool
+	previewSlots      map[string]bool
 	previewErrors     map[string]string
 	compareIDs        []string
 	comparePage       bool
@@ -147,6 +149,12 @@ func main() {
 		}
 		fmt.Println("FontLens self-check passed")
 		return
+	}
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(32 << 20)
+	}
+	if os.Getenv("MYGO_GPU") == "" {
+		os.Setenv("MYGO_GPU", "0")
 	}
 	app := &appState{leftWidth: 208, centerWidth: 800, coverageSplit: 50, licenseSplit: 25, licenseName: "LICENSE", scope: "all", selectedRow: -1, previewText: "FontLens 123", previewPreset: "自定义", previewSize: 30, previewLineHeight: 1.5}
 	app.sortMode = 1
@@ -859,6 +867,7 @@ func (a *appState) count(scope string) int {
 
 func (a *appState) view(c *ui.Context) {
 	a.previewWanted = make(map[string]bool)
+	a.previewSlots = make(map[string]bool)
 	defer a.cancelPreviews(a.previewWanted)
 	switch a.themeMode {
 	case 1:
@@ -1061,13 +1070,14 @@ func (a *appState) previewKey(face fonts.Entry, sample string, size float32, wid
 }
 
 func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, width, height int, scale float32, ink color.RGBA) string {
-	if a.previewCache == nil {
-		a.previewCache = make(map[string]*ui.Bitmap)
+	if a.previewLoading == nil {
+		a.previewBitmaps = make(map[string]*ui.Bitmap)
+		a.previewLast = make(map[string]*ui.Bitmap)
 		a.previewLoading = make(map[string]*previewRequest)
 		a.previewErrors = make(map[string]string)
 	}
 	key := a.previewKey(face, sample, size, width, height, scale, ink)
-	if a.previewCache[key] != nil || a.previewLoading[key] != nil || a.previewErrors[key] != "" {
+	if a.previewBitmaps[key] != nil || a.previewLoading[key] != nil || a.previewErrors[key] != "" {
 		return key
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1080,6 +1090,10 @@ func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, 
 	}
 	go func() {
 		bitmap, err := preview.Render(ctx, face.Path, face.Index, axes, sample, size, lineHeight, width, height, scale, ink)
+		if ctx.Err() != nil {
+			cancel()
+			return
+		}
 		a.window.Update(func() {
 			defer cancel()
 			if a.previewLoading[key] != request {
@@ -1093,20 +1107,32 @@ func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, 
 				a.previewErrors[key] = err.Error()
 				return
 			}
-			if len(a.previewCache) >= 400 {
-				a.previewCache = make(map[string]*ui.Bitmap)
-			}
-			a.previewCache[key] = ui.NewBitmap(bitmap)
+			a.previewBitmaps[key] = ui.NewBitmap(bitmap)
 		})
 	}()
 	return key
 }
 
 func (a *appState) cancelPreviews(wanted map[string]bool) {
+	for key := range a.previewBitmaps {
+		if !wanted[key] {
+			delete(a.previewBitmaps, key)
+		}
+	}
+	for slot := range a.previewLast {
+		if !a.previewSlots[slot] {
+			delete(a.previewLast, slot)
+		}
+	}
 	for key, request := range a.previewLoading {
 		if !wanted[key] {
 			request.cancel()
 			delete(a.previewLoading, key)
+		}
+	}
+	for key := range a.previewErrors {
+		if !wanted[key] {
+			delete(a.previewErrors, key)
 		}
 	}
 }
@@ -1124,6 +1150,7 @@ func (a *appState) syncPreviews(c *ui.Context, faces []fonts.Entry, sample strin
 			}
 		}
 		a.previewWanted[a.previewKey(face, text, size, width, height, scale, ink)] = true
+		a.previewSlots[fmt.Sprintf("%s:%d:%d:%d:%d:%d", face.ID(), width, height, ink.R, ink.G, ink.B)] = true
 		a.ensurePreview(face, text, size, width, height, scale, ink)
 	}
 }
@@ -1137,11 +1164,10 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
 	key := a.previewKey(face, sample, size, width, height, scale, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
 	slot := fmt.Sprintf("%s:%d:%d:%d:%d:%d", face.ID(), width, height, textColor.R, textColor.G, textColor.B)
-	if bitmap := a.previewCache[key]; bitmap != nil {
-		if a.previewLast == nil || len(a.previewLast) >= 400 {
-			a.previewLast = make(map[string]*ui.Bitmap)
+	if bitmap := a.previewBitmaps[key]; bitmap != nil {
+		if a.previewSlots[slot] {
+			a.previewLast[slot] = bitmap
 		}
-		a.previewLast[slot] = bitmap
 		displayWidth := float32(width)
 		if width == 0 {
 			displayWidth, _ = ui.ImageSize(bitmap)

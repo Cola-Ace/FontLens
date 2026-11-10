@@ -8,6 +8,8 @@
 
 设置保存在 `%LocalAppData%\FontLens\settings.json`，SQLite 索引与覆盖缓存保存在同目录的 `index.db`。扫描仅读取字体文件，程序不请求网络。测试字体可以放在本地目录，但不随源码分发。
 
+字体预览由 DirectWrite 排版、Direct2D 绘制，最多两个任务并行，只保留当前页面需要的位图。界面默认使用 CPU 绘制以降低内存占用；需要 GPU 界面加速时，可在启动前设置环境变量 `MYGO_GPU=1`。
+
 ## 构建
 
 使用 PowerShell 7 和 Go 1.27.3：

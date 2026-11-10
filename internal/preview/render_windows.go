@@ -1,45 +1,42 @@
 package preview
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
 	"math"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode"
+	"unicode/utf16"
 	"unsafe"
 
 	"fontlens/internal/fonts"
 	"github.com/deploymenttheory/go-bindings-win32/bindings/runtime/win32"
 	"github.com/deploymenttheory/go-bindings-win32/bindings/win32/foundation"
+	"github.com/deploymenttheory/go-bindings-win32/bindings/win32/graphics/direct2d"
+	"github.com/deploymenttheory/go-bindings-win32/bindings/win32/graphics/direct2d/common"
 	"github.com/deploymenttheory/go-bindings-win32/bindings/win32/graphics/directwrite"
+	dxgicommon "github.com/deploymenttheory/go-bindings-win32/bindings/win32/graphics/dxgi/common"
+	"github.com/deploymenttheory/go-bindings-win32/bindings/win32/graphics/imaging"
 	"github.com/deploymenttheory/go-bindings-win32/bindings/win32/system/com"
-	"github.com/go-text/typesetting/font"
-	"github.com/go-text/typesetting/font/opentype"
-	"github.com/go-text/typesetting/shaping"
-	"golang.org/x/image/math/fixed"
 )
 
-type oneFace struct{ face *font.Face }
+var renderSlots = make(chan struct{}, 2)
 
-func (f oneFace) ResolveFace(r rune) *font.Face { return f.face }
-
-var renderSlots = make(chan struct{}, 1)
+const maxPreviewBitmapBytes = 8 << 20
 
 // A zero width renders a complete single line at its natural width.
 func Render(ctx context.Context, path string, faceIndex int, axes map[string]float32, sample string, size, lineHeight float32, width, height int, scale float32, ink color.RGBA) (*image.RGBA, error) {
 	if width < 0 || height <= 0 || size <= 0 || scale <= 0 {
 		return nil, fmt.Errorf("invalid preview dimensions")
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	if strings.ContainsRune(sample, 0) {
+		return nil, fmt.Errorf("预览文字不能包含空字符")
 	}
-	// Each render parses font outlines; bound concurrent copies of large fonts.
 	select {
 	case renderSlots <- struct{}{}:
 		defer func() { <-renderSlots }()
@@ -61,24 +58,22 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 	}
 	factory := (*directwrite.IDWriteFactory)(unsafe.Pointer(unknown))
 	defer factory.Release()
-	factory2, err := win32.QueryInterface[directwrite.IDWriteFactory2](factory, &directwrite.IID_IDWriteFactory2)
+	factory3, err := win32.QueryInterface[directwrite.IDWriteFactory3](factory, &directwrite.IID_IDWriteFactory3)
 	if err != nil {
 		return nil, err
 	}
-	defer factory2.Release()
-	var dwFile *directwrite.IDWriteFontFile
-	var resource opentype.Resource
+	defer factory3.Release()
+	var file *directwrite.IDWriteFontFile
 	var sfnt []byte
-	var file *os.File
-	if strings.EqualFold(filepath.Ext(path), ".woff2") || strings.EqualFold(filepath.Ext(path), ".woff") {
+	if strings.EqualFold(filepath.Ext(path), ".woff") || strings.EqualFold(filepath.Ext(path), ".woff2") {
 		sfnt, err = fonts.DecodeWebFont(path)
 		if err != nil {
 			return nil, err
 		}
-		resource = bytes.NewReader(sfnt)
-		factory5, queryErr := win32.QueryInterface[directwrite.IDWriteFactory5](factory, &directwrite.IID_IDWriteFactory5)
-		if queryErr != nil {
-			return nil, queryErr
+		defer runtime.KeepAlive(sfnt)
+		factory5, err := win32.QueryInterface[directwrite.IDWriteFactory5](factory, &directwrite.IID_IDWriteFactory5)
+		if err != nil {
+			return nil, err
 		}
 		defer factory5.Release()
 		var loader *directwrite.IDWriteInMemoryFontFileLoader
@@ -90,42 +85,129 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 			return nil, err
 		}
 		defer factory.UnregisterFontFileLoader(&loader.IDWriteFontFileLoader)
-		if err := loader.CreateInMemoryFontFileReference(factory, sfnt, nil, &dwFile); err != nil {
+		if err := loader.CreateInMemoryFontFileReference(factory, sfnt, nil, &file); err != nil {
 			return nil, err
 		}
-	} else {
-		if err := factory.CreateFontFileReference(path, nil, &dwFile); err != nil {
-			return nil, err
-		}
-		file, err = os.Open(path)
-		if err != nil {
-			return nil, err
-		}
-		defer file.Close()
-		resource = file
+	} else if err := factory.CreateFontFileReference(path, nil, &file); err != nil {
+		return nil, err
 	}
-	defer dwFile.Release()
+	defer file.Release()
 	var supported foundation.BOOL
 	var fileType directwrite.DWRITE_FONT_FILE_TYPE
 	var faceType directwrite.DWRITE_FONT_FACE_TYPE
-	var faceCount uint32
-	if err := dwFile.Analyze(&supported, &fileType, &faceType, &faceCount); err != nil {
+	var count uint32
+	if err := file.Analyze(&supported, &fileType, &faceType, &count); err != nil {
 		return nil, err
 	}
-	if supported == 0 || faceIndex < 0 || uint32(faceIndex) >= faceCount {
+	if supported == 0 || faceIndex < 0 || uint32(faceIndex) >= count {
 		return nil, fmt.Errorf("DirectWrite cannot open face %d", faceIndex)
 	}
-	var dwFace *directwrite.IDWriteFontFace
-	if len(axes) == 0 {
-		if err := factory.CreateFontFace(faceType, []*directwrite.IDWriteFontFile{dwFile}, uint32(faceIndex), directwrite.DWRITE_FONT_SIMULATIONS_NONE, &dwFace); err != nil {
+	var reference *directwrite.IDWriteFontFaceReference
+	if err := factory3.CreateFontFaceReference(file, uint32(faceIndex), directwrite.DWRITE_FONT_SIMULATIONS_NONE, &reference); err != nil {
+		return nil, err
+	}
+	defer reference.Release()
+	var face *directwrite.IDWriteFontFace3
+	if err := reference.CreateFontFace(&face); err != nil {
+		return nil, err
+	}
+	defer face.Release()
+	codepoints := make([]uint32, 0, len(sample))
+	for _, r := range sample {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r >= 0xFE00 && r <= 0xFE0F || r >= 0xE0100 && r <= 0xE01EF {
+			continue
+		}
+		codepoints = append(codepoints, uint32(r))
+	}
+	if len(codepoints) > 0 {
+		glyphs := make([]uint16, len(codepoints))
+		if err := face.GetGlyphIndices(&codepoints[0], uint32(len(codepoints)), &glyphs[0]); err != nil {
 			return nil, err
 		}
-	} else {
-		factory6, queryErr := win32.QueryInterface[directwrite.IDWriteFactory6](factory, &directwrite.IID_IDWriteFactory6)
-		if queryErr != nil {
-			return nil, queryErr
+		for i, glyph := range glyphs {
+			if glyph == 0 {
+				return nil, fmt.Errorf("缺字：U+%04X", codepoints[i])
+			}
 		}
-		defer factory6.Release()
+	}
+	var builder *directwrite.IDWriteFontSetBuilder
+	if err := factory3.CreateFontSetBuilder(&builder); err != nil {
+		return nil, err
+	}
+	defer builder.Release()
+	if err := builder.AddFontFaceReference_(reference); err != nil {
+		return nil, err
+	}
+	var set *directwrite.IDWriteFontSet
+	if err := builder.CreateFontSet(&set); err != nil {
+		return nil, err
+	}
+	defer set.Release()
+	var collection *directwrite.IDWriteFontCollection1
+	if err := factory3.CreateFontCollectionFromFontSet(set, &collection); err != nil {
+		return nil, err
+	}
+	defer collection.Release()
+	var family *directwrite.IDWriteFontFamily1
+	if err := collection.GetFontFamily(0, &family); err != nil {
+		return nil, err
+	}
+	defer family.Release()
+	var names *directwrite.IDWriteLocalizedStrings
+	if err := family.GetFamilyNames(&names); err != nil {
+		return nil, err
+	}
+	defer names.Release()
+	var nameLength uint32
+	if err := names.GetStringLength(0, &nameLength); err != nil {
+		return nil, err
+	}
+	name := make([]uint16, nameLength+1)
+	if err := names.GetString(0, foundation.PWSTR(unsafe.Pointer(&name[0])), uint32(len(name))); err != nil {
+		return nil, err
+	}
+	var format *directwrite.IDWriteTextFormat
+	if err := factory.CreateTextFormat(string(utf16.Decode(name[:nameLength])), &collection.IDWriteFontCollection, face.GetWeight(), face.GetStyle(), face.GetStretch(), size, "", &format); err != nil {
+		return nil, err
+	}
+	defer format.Release()
+	if err := format.SetLineSpacing(directwrite.DWRITE_LINE_SPACING_METHOD_UNIFORM, size*lineHeight, size*1.25); err != nil {
+		return nil, err
+	}
+	layoutWidth := float32(max(1, width-16))
+	if width == 0 {
+		sample = strings.ReplaceAll(sample, "\n", " ")
+		layoutWidth = 1 << 20
+		if err := format.SetWordWrapping(directwrite.DWRITE_WORD_WRAPPING_NO_WRAP); err != nil {
+			return nil, err
+		}
+	}
+	var layout *directwrite.IDWriteTextLayout
+	textLength := uint32(len(utf16.Encode([]rune(sample))))
+	if err := factory.CreateTextLayout(sample, textLength, format, layoutWidth, float32(height), &layout); err != nil {
+		return nil, err
+	}
+	defer layout.Release()
+	layout2, err := win32.QueryInterface[directwrite.IDWriteTextLayout2](layout, &directwrite.IID_IDWriteTextLayout2)
+	if err != nil {
+		return nil, err
+	}
+	defer layout2.Release()
+	// An empty fallback list keeps every glyph tied to the selected file and face.
+	var fallbackBuilder *directwrite.IDWriteFontFallbackBuilder
+	if err := factory3.CreateFontFallbackBuilder(&fallbackBuilder); err != nil {
+		return nil, err
+	}
+	defer fallbackBuilder.Release()
+	var fallback *directwrite.IDWriteFontFallback
+	if err := fallbackBuilder.CreateFontFallback(&fallback); err != nil {
+		return nil, err
+	}
+	defer fallback.Release()
+	if err := layout2.SetFontFallback(fallback); err != nil {
+		return nil, err
+	}
+	if len(axes) > 0 && textLength > 0 {
 		values := make([]directwrite.DWRITE_FONT_AXIS_VALUE, 0, len(axes))
 		for tag, value := range axes {
 			if len(tag) != 4 {
@@ -133,148 +215,77 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 			}
 			values = append(values, directwrite.DWRITE_FONT_AXIS_VALUE{AxisTag: directwrite.DWRITE_FONT_AXIS_TAG(binary.LittleEndian.Uint32([]byte(tag))), Value: value})
 		}
-		var reference *directwrite.IDWriteFontFaceReference1
-		if err := factory6.CreateFontFaceReference(dwFile, uint32(faceIndex), directwrite.DWRITE_FONT_SIMULATIONS_NONE, values, &reference); err != nil {
+		layout4, err := win32.QueryInterface[directwrite.IDWriteTextLayout4](layout, &directwrite.IID_IDWriteTextLayout4)
+		if err != nil {
 			return nil, err
 		}
-		defer reference.Release()
-		var face5 *directwrite.IDWriteFontFace5
-		if err := reference.CreateFontFace(&face5); err != nil {
+		defer layout4.Release()
+		if err := layout4.SetFontAxisValues(values, directwrite.DWRITE_TEXT_RANGE{StartPosition: 0, Length: textLength}); err != nil {
 			return nil, err
 		}
-		dwFace = (*directwrite.IDWriteFontFace)(unsafe.Pointer(face5))
 	}
-	defer dwFace.Release()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	loaders, err := opentype.NewLoaders(resource)
-	if err != nil {
-		return nil, err
-	}
-	if faceIndex >= len(loaders) {
-		return nil, fmt.Errorf("face index %d is out of range", faceIndex)
-	}
-	parsed, err := font.NewFont(loaders[faceIndex])
-	if err != nil {
-		return nil, err
+	if width == 0 {
+		var metrics directwrite.DWRITE_TEXT_METRICS
+		if err := layout.GetMetrics(&metrics); err != nil {
+			return nil, err
+		}
+		width = int(math.Ceil(float64(metrics.WidthIncludingTrailingWhitespace))) + 16
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	goFace := font.NewFace(parsed)
-	if len(axes) > 0 {
-		variations := make([]font.Variation, 0, len(axes))
-		for tag, value := range axes {
-			variations = append(variations, font.Variation{Tag: opentype.MustNewTag(tag), Value: value})
-		}
-		goFace.SetVariations(variations)
-	}
-	var segmenter shaping.Segmenter
-	var shaper shaping.HarfbuzzShaper
-	singleLine := width == 0
-	if singleLine {
-		sample = strings.ReplaceAll(sample, "\n", " ")
-	}
-	type previewLine struct {
-		runes []rune
-		runs  []shaping.Output
-	}
-	var layout []previewLine
-	for _, paragraph := range strings.Split(sample, "\n") {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		runes := []rune(paragraph)
-		if len(runes) == 0 {
-			layout = append(layout, previewLine{})
-			continue
-		}
-		input := shaping.Input{Text: runes, RunStart: 0, RunEnd: len(runes), Face: goFace, Size: fixed.Int26_6(size * 64)}
-		runs := segmenter.Split(input, oneFace{input.Face})
-		outputs := make([]shaping.Output, 0, len(runs))
-		for _, run := range runs {
-			outputs = append(outputs, shaper.Shape(run))
-		}
-		if singleLine {
-			var advance fixed.Int26_6
-			for _, out := range outputs {
-				advance += out.Advance
-			}
-			width = advance.Ceil() + 16
-			layout = append(layout, previewLine{runes: runes, runs: outputs})
-		} else {
-			var wrapper shaping.LineWrapper
-			lines, _ := wrapper.WrapParagraphF(shaping.WrapConfig{Direction: runs[0].Direction}, fixed.Int26_6((width-16)*64), runes, shaping.NewSliceIterator(outputs))
-			for _, line := range lines {
-				layout = append(layout, previewLine{runes: runes, runs: line})
-			}
-		}
-	}
-	pixelWidth := int(math.Ceil(float64(float32(max(1, width)) * scale)))
-	pixelHeight := int(math.Ceil(float64(float32(height) * scale)))
-	// Rasterize at the display's pixel density so hinting survives unchanged.
-	bitmap := image.NewRGBA(image.Rect(0, 0, pixelWidth, pixelHeight))
-	transform := directwrite.DWRITE_MATRIX{M11: scale, M22: scale}
-	for lineIndex, line := range layout {
-		penX := float32(8)
-		baseline := size*1.25 + float32(lineIndex)*size*lineHeight
-		for _, out := range line.runs {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			if len(out.Glyphs) == 0 {
-				continue
-			}
-			ids := make([]uint16, len(out.Glyphs))
-			advances := make([]float32, len(out.Glyphs))
-			offsets := make([]directwrite.DWRITE_GLYPH_OFFSET, len(out.Glyphs))
-			for i, glyph := range out.Glyphs {
-				if glyph.GlyphID == 0 {
-					return nil, fmt.Errorf("缺字：U+%04X", line.runes[glyph.ClusterIndex])
-				}
-				ids[i] = uint16(glyph.GlyphID)
-				advances[i] = float32(glyph.Advance) / 64
-				offsets[i] = directwrite.DWRITE_GLYPH_OFFSET{AdvanceOffset: float32(glyph.XOffset) / 64, AscenderOffset: float32(glyph.YOffset) / 64}
-			}
-			glyphRun := directwrite.DWRITE_GLYPH_RUN{FontFace: dwFace, FontEmSize: size, GlyphCount: uint32(len(ids)), GlyphIndices: &ids[0], GlyphAdvances: &advances[0], GlyphOffsets: &offsets[0]}
-			var analysis *directwrite.IDWriteGlyphRunAnalysis
-			if err := factory2.CreateGlyphRunAnalysis(&glyphRun, &transform, directwrite.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, directwrite.DWRITE_MEASURING_MODE_NATURAL, directwrite.DWRITE_GRID_FIT_MODE_ENABLED, directwrite.DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE, penX, baseline, &analysis); err != nil {
-				return nil, err
-			}
-			var bounds foundation.RECT
-			err = analysis.GetAlphaTextureBounds(directwrite.DWRITE_TEXTURE_ALIASED_1x1, &bounds)
-			if err == nil && bounds.Right > bounds.Left && bounds.Bottom > bounds.Top {
-				alpha := make([]byte, int(bounds.Right-bounds.Left)*int(bounds.Bottom-bounds.Top))
-				err = analysis.CreateAlphaTexture(directwrite.DWRITE_TEXTURE_ALIASED_1x1, &bounds, alpha)
-				if err == nil {
-					paint(bitmap, bounds, alpha, ink)
-				}
-			}
-			analysis.Release()
-			if err != nil {
-				return nil, err
-			}
-			for _, advance := range advances {
-				penX += advance
-			}
-			runtime.KeepAlive(ids)
-			runtime.KeepAlive(advances)
-			runtime.KeepAlive(offsets)
-		}
-	}
-	return bitmap, nil
+	return drawLayout(ctx, layout, width, height, scale, ink)
 }
 
-func paint(dst *image.RGBA, bounds foundation.RECT, alpha []byte, ink color.RGBA) {
-	width := int(bounds.Right - bounds.Left)
-	for y := int(bounds.Top); y < int(bounds.Bottom); y++ {
-		for x := int(bounds.Left); x < int(bounds.Right); x++ {
-			if !image.Pt(x, y).In(dst.Rect) {
-				continue
-			}
-			a := alpha[(y-int(bounds.Top))*width+x-int(bounds.Left)]
-			dst.SetRGBA(x, y, color.RGBA{R: uint8(uint16(ink.R) * uint16(a) / 255), G: uint8(uint16(ink.G) * uint16(a) / 255), B: uint8(uint16(ink.B) * uint16(a) / 255), A: a})
-		}
+func drawLayout(ctx context.Context, layout *directwrite.IDWriteTextLayout, width, height int, scale float32, ink color.RGBA) (*image.RGBA, error) {
+	pixelWidth := int(math.Ceil(float64(float32(max(1, width)) * scale)))
+	pixelHeight := int(math.Ceil(float64(float32(height) * scale)))
+	if float64(pixelWidth)*float64(pixelHeight)*4 > maxPreviewBitmapBytes {
+		return nil, fmt.Errorf("预览尺寸过大，请减小字号或缩短文案")
 	}
+	var unknown *win32.IUnknown
+	if err := com.CoCreateInstance(&imaging.CLSID_WICImagingFactory, nil, com.CLSCTX_INPROC_SERVER, &imaging.IID_IWICImagingFactory, &unknown); err != nil {
+		return nil, err
+	}
+	wic := (*imaging.IWICImagingFactory)(unsafe.Pointer(unknown))
+	defer wic.Release()
+	var pixels *imaging.IWICBitmap
+	if err := wic.CreateBitmap(uint32(pixelWidth), uint32(pixelHeight), &imaging.GUID_WICPixelFormat32bppPBGRA, imaging.WICBitmapCacheOnLoad, &pixels); err != nil {
+		return nil, err
+	}
+	defer pixels.Release()
+	if err := direct2d.D2D1CreateFactory(direct2d.D2D1_FACTORY_TYPE_SINGLE_THREADED, &direct2d.IID_ID2D1Factory, nil, &unknown); err != nil {
+		return nil, err
+	}
+	factory := (*direct2d.ID2D1Factory)(unsafe.Pointer(unknown))
+	defer factory.Release()
+	properties := direct2d.D2D1_RENDER_TARGET_PROPERTIES{Type: direct2d.D2D1_RENDER_TARGET_TYPE_SOFTWARE, PixelFormat: common.D2D1_PIXEL_FORMAT{Format: dxgicommon.DXGI_FORMAT_B8G8R8A8_UNORM, AlphaMode: common.D2D1_ALPHA_MODE_PREMULTIPLIED}, DpiX: 96 * scale, DpiY: 96 * scale}
+	var target *direct2d.ID2D1RenderTarget
+	if err := factory.CreateWicBitmapRenderTarget(pixels, &properties, &target); err != nil {
+		return nil, err
+	}
+	defer target.Release()
+	var brush *direct2d.ID2D1SolidColorBrush
+	if err := target.CreateSolidColorBrush(&common.D2D1_COLOR_F{R: float32(ink.R) / 255, G: float32(ink.G) / 255, B: float32(ink.B) / 255, A: 1}, nil, &brush); err != nil {
+		return nil, err
+	}
+	defer brush.Release()
+	target.SetTextAntialiasMode(direct2d.D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE)
+	target.BeginDraw()
+	target.Clear(&common.D2D1_COLOR_F{})
+	target.DrawTextLayout(common.D2D_POINT_2F{X: 8}, layout, &brush.ID2D1Brush, direct2d.D2D1_DRAW_TEXT_OPTIONS_NONE)
+	if err := target.EndDraw(nil, nil); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	bitmap := image.NewRGBA(image.Rect(0, 0, pixelWidth, pixelHeight))
+	if err := pixels.CopyPixels(nil, uint32(bitmap.Stride), bitmap.Pix); err != nil {
+		return nil, err
+	}
+	for i := 0; i < len(bitmap.Pix); i += 4 {
+		bitmap.Pix[i], bitmap.Pix[i+2] = bitmap.Pix[i+2], bitmap.Pix[i]
+	}
+	return bitmap, nil
 }
