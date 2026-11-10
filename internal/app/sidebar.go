@@ -56,6 +56,8 @@ func (a *appState) sidebar(c *ui.Context) {
 		if ui.Outline(c, &a.tree, []string{"all"}, a.treeChildren, func(node string) {
 			label := node
 			icon := ""
+			isSource := slices.Contains(a.sources, node)
+			rowHeight := float32(22)
 			switch node {
 			case "all":
 				label = "全部"
@@ -66,11 +68,15 @@ func (a *appState) sidebar(c *ui.Context) {
 			case "custom":
 				label = "自定义文件夹"
 			default:
-				if !slices.Contains(a.sources, node) {
-					label = filepath.Base(node)
+				label = filepath.Base(node)
+				if label == string(filepath.Separator) {
+					label = node
+				}
+				if isSource {
+					rowHeight = 42
 				}
 			}
-			row := ui.Row(c).Grow(1).MinWidth(0).Height(22).Padding(0, 6, 0, 0).Gap(4).AlignItems(ui.Center).Children(func() {
+			row := ui.Row(c).Grow(1).MinWidth(0).Height(rowHeight).Padding(0, 6, 0, 0).Gap(4).AlignItems(ui.Center).Children(func() {
 				if icon != "" {
 					ui.Text(c, icon).Font("Segoe MDL2 Assets").FontSize(13).Width(16).Shrink(0)
 				} else {
@@ -90,7 +96,18 @@ func (a *appState) sidebar(c *ui.Context) {
 						}
 					})
 				}
-				ui.Text(c, label).FontSize(12).SingleLine().Grow(1).MinWidth(0).Tooltip(label)
+				if isSource {
+					ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+						ui.Text(c, label).FontSize(12).SingleLine().Tooltip(node)
+						ink := c.Theme().TextMuted
+						if node == a.scope {
+							ink = c.Theme().AccentText
+						}
+						ui.Text(c, node).FontSize(12).TextColor(ink).SingleLine().Tooltip(node)
+					})
+				} else {
+					ui.Text(c, label).FontSize(12).SingleLine().Grow(1).MinWidth(0).Tooltip(label)
+				}
 				ui.Textf(c, "%d", a.count(node)).FontSize(12).SingleLine().Shrink(0)
 			})
 			if node == "custom" {
@@ -99,7 +116,7 @@ func (a *appState) sidebar(c *ui.Context) {
 						a.chooseFolder()
 					}
 				})
-			} else if slices.Contains(a.sources, node) {
+			} else if isSource {
 				row.ContextMenu(func(m *ui.Menu) {
 					if m.Item("移除该文件夹").Chosen() {
 						a.removeFolder(node)
