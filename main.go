@@ -35,6 +35,13 @@ import (
 //go:embed docs/USER.md docs/PREVIEW_TEXTS.md LICENSE third_party/licenses/*
 var embeddedDocs embed.FS
 
+const (
+	defaultWindowWidth = 1440
+	defaultLeftWidth   = 208 * 4.0 / 3
+	defaultDetailWidth = (defaultWindowWidth - 208 - 800 - 2) * 2.0 / 3
+	defaultCenterWidth = defaultWindowWidth - defaultLeftWidth - defaultDetailWidth - 2
+)
+
 type settings struct {
 	Sources         []string              `json:"sources"`
 	Scope           string                `json:"scope"`
@@ -156,7 +163,7 @@ func main() {
 	if os.Getenv("MYGO_GPU") == "" {
 		os.Setenv("MYGO_GPU", "0")
 	}
-	app := &appState{leftWidth: 208, centerWidth: 800, coverageSplit: 50, licenseSplit: 25, licenseName: "LICENSE", scope: "all", selectedRow: -1, previewText: "FontLens 123", previewPreset: "自定义", previewSize: 30, previewLineHeight: 1.5}
+	app := &appState{leftWidth: defaultLeftWidth, centerWidth: defaultCenterWidth, coverageSplit: 50, licenseSplit: 25, licenseName: "LICENSE", scope: "all", selectedRow: -1, previewText: "FontLens 123", previewPreset: "自定义", previewSize: 30, previewLineHeight: 1.5}
 	app.sortMode = 1
 	app.tableSort = ui.SortOrder{Column: "name"}
 	app.sortSeen = app.tableSort
@@ -172,7 +179,7 @@ func main() {
 	}
 	mygo.App.WhenReady(func() {
 		app.window = mygo.NewWindow(mygo.WindowOptions{
-			Title: "字镜 · FontLens", Width: 1440, Height: 900, MinWidth: 1024, MinHeight: 720, StateKey: "main",
+			Title: "字镜 · FontLens", Width: defaultWindowWidth, Height: 900, MinWidth: 1024, MinHeight: 720, StateKey: "main",
 			Content: ui.View(app.view),
 		})
 		app.refresh()
@@ -542,11 +549,13 @@ func (a *appState) loadSettings() {
 		if saved.ThemeMode >= 0 && saved.ThemeMode <= 2 {
 			a.themeMode = saved.ThemeMode
 		}
-		if saved.LeftWidth > 0 {
-			a.leftWidth = saved.LeftWidth
-		}
-		if saved.CenterWidth > 0 {
-			a.centerWidth = saved.CenterWidth
+		if saved.LeftWidth != 208 || saved.CenterWidth != 800 {
+			if saved.LeftWidth > 0 {
+				a.leftWidth = saved.LeftWidth
+			}
+			if saved.CenterWidth > 0 {
+				a.centerWidth = saved.CenterWidth
+			}
 		}
 		if saved.CoverageSplit > 0 && saved.CoverageSplit < 100 {
 			a.coverageSplit = saved.CoverageSplit
@@ -895,7 +904,7 @@ func (a *appState) view(c *ui.Context) {
 	leftWidth, centerWidth := a.leftWidth, a.centerWidth
 	if width >= 1024 {
 		leftWidth = min(leftWidth, width-800)
-		centerWidth = min(centerWidth, width-leftWidth-320)
+		centerWidth = min(centerWidth, width-leftWidth-280-2)
 	}
 	if ui.Split(c, &leftWidth, func() { a.sidebar(c) }, func() {
 		if ui.Split(c, &centerWidth, func() { a.browser(c, centerWidth) }, func() { a.details(c) }).Fill().Changed() {
@@ -1419,8 +1428,24 @@ func (a *appState) aboutView(c *ui.Context) {
 	})
 }
 
+func (a *appState) treeChildren(node string) []string {
+	var children []string
+	switch node {
+	case "all":
+		children = []string{"system", "custom"}
+	case "custom":
+		children = a.sources
+	default:
+		children = a.dirs[node]
+	}
+	if len(children) == 0 {
+		return nil
+	}
+	return children
+}
+
 func (a *appState) sidebar(c *ui.Context) {
-	ui.Column(c).Fill().Padding(16).Gap(12).Children(func() {
+	ui.Column(c).Fill().Padding(8, 12).Gap(12).Children(func() {
 		ui.Text(c, "字镜").FontSize(24).Bold()
 		ui.Text(c, "字体目录").TextColor(c.Theme().TextMuted)
 		for row := 0; row < a.tree.Rows(); row++ {
@@ -1430,28 +1455,60 @@ func (a *appState) sidebar(c *ui.Context) {
 			}
 		}
 		a.tree.List.Selected = &a.treeRow
-		if ui.Outline(c, &a.tree, []string{"all"}, func(node string) []string {
-			switch node {
-			case "all":
-				return []string{"system", "custom"}
-			case "custom":
-				return a.sources
-			default:
-				return a.dirs[node]
+		a.tree.Prefix = func(row ui.OutlineRow) {
+			ui.Box(c).Width(float32(row.Depth) * 16).Shrink(0)
+			arrow := row.Arrow().Size(16, 22)
+			if row.Branch {
+				arrow.Draw(func(p *ui.Painter, r ui.Rect) {
+					x, y := r.X+r.W/2, r.Y+r.H/2
+					var path ui.Path
+					if row.Open {
+						path.MoveTo(x-3, y-1.5).LineTo(x, y+1.5).LineTo(x+3, y-1.5)
+					} else {
+						path.MoveTo(x-1.5, y-3).LineTo(x+1.5, y).LineTo(x-1.5, y+3)
+					}
+					p.StrokePath(&path, 1.25, c.Theme().Text)
+				})
 			}
-		}, func(node string) {
+		}
+		if ui.Outline(c, &a.tree, []string{"all"}, a.treeChildren, func(node string) {
 			label := node
+			icon := ""
 			switch node {
 			case "all":
 				label = "全部"
+				icon = "\ue8f1"
 			case "system":
 				label = "系统字体"
+				icon = "\ue8d2"
 			case "custom":
 				label = "自定义文件夹"
 			default:
 				label = filepath.Base(node)
 			}
-			ui.Textf(c, "%s (%d)", label, a.count(node)).SingleLine()
+			ui.Row(c).Grow(1).MinWidth(0).Height(22).Padding(0, 6, 0, 0).Gap(4).AlignItems(ui.Center).Children(func() {
+				if icon != "" {
+					ui.Text(c, icon).Font("Segoe MDL2 Assets").FontSize(13).Width(16).Shrink(0)
+				} else {
+					ui.Box(c).Size(16, 16).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
+						ink := c.Theme().TextMuted
+						if node == a.scope {
+							ink = c.Theme().AccentText
+						}
+						x, y := r.X+1, r.Y+3
+						var folder ui.Path
+						folder.MoveTo(x, y).LineTo(x+5, y).LineTo(x+7, y+2).LineTo(x+13, y+2).LineTo(x+13, y+10).LineTo(x, y+10).Close()
+						p.FillPath(&folder, ink)
+						if a.tree.Open.Has(node) && len(a.treeChildren(node)) > 0 {
+							var flap ui.Path
+							flap.MoveTo(x+1, y+4).LineTo(x+12, y+4)
+							p.StrokePath(&flap, 1, c.Theme().Surface)
+						}
+					})
+				}
+				ui.Text(c, label).FontSize(12).SingleLine().Grow(1).MinWidth(0).Tooltip(label)
+				ui.Textf(c, "%d", a.count(node)).FontSize(12).SingleLine().Shrink(0)
+			})
 		}).Grow(1).Changed() {
 			a.scope = a.tree.Item(a.treeRow)
 			a.rebuild()
