@@ -3,5 +3,6 @@
   "identifier": "app.fontlens.desktop",
   "version": "0.0.0",
   "icon": "resources/icon.png",
+  "resourcesExclude": ["icon.ico", "icon.png", "icon.svg"],
   "out": "dist"
 }

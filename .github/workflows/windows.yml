@@ -72,8 +72,11 @@ jobs:
       - name: Build portable EXE
         shell: pwsh
         run: |
-          go tool mygo build -platform windows/amd64 -skip-installer
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/build.ps1
+          $files = @(Get-ChildItem -LiteralPath 'dist/windows-amd64' -Force)
+          if ($files.Count -ne 1 -or $files[0].Name -ne 'FontLens.exe' -or $files[0].PSIsContainer) {
+            throw 'Portable build must contain only FontLens.exe'
+          }
       - name: Check executable behavior and startup
         shell: pwsh
         env:
