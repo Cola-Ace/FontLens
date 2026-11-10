@@ -10,6 +10,7 @@ import (
 	"fontlens/internal/fonts"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"golang.org/x/sys/windows"
 	"golang.org/x/text/collate"
 	"golang.org/x/text/language"
 )
@@ -167,10 +168,17 @@ func (a *appState) browser(c *ui.Context, width float32) {
 		a.table.Key = func(row int) any { return a.rows[row].ID() }
 		a.table.CellMenu = func(m *ui.Menu, row, column int) {
 			a.selectedRow = row
-			a.selectedID = a.rows[row].ID()
-			family := a.rows[row].Family
+			face := a.rows[row]
+			a.selectedID = face.ID()
+			family := face.Family
 			if m.Item("复制 Family Name").Disabled(family == "").Chosen() {
 				mygo.Clipboard.WriteText(family)
+			}
+			if m.Item("打开该字体所在目录").Chosen() {
+				if err := mygo.Shell.OpenPath(filepath.Dir(face.Path)); err != nil {
+					a.errors = append(a.errors, "打开字体目录失败: "+err.Error())
+					a.showErrors = true
+				}
 			}
 		}
 		sortTitle := "Name（字体名称）"
@@ -189,25 +197,37 @@ func (a *appState) browser(c *ui.Context, width float32) {
 		ui.Themed(c, &listTheme).Grow(1).Children(func() {
 			if ui.Table(c, &a.table, columns, len(a.rows), func(row, column int) {
 				face := a.rows[row]
-				if column == 0 {
-					checked := slices.Contains(a.compareIDs, face.ID())
-					if ui.Checkbox(c, &checked, "").Changed() {
-						if checked && len(a.compareIDs) < 4 {
-							a.compareIDs = append(a.compareIDs, face.ID())
-							a.compareLimit = false
-						} else if checked {
-							a.compareLimit = true
-						} else {
-							a.compareIDs = slices.DeleteFunc(a.compareIDs, func(id string) bool { return id == face.ID() })
-							a.compareLimit = false
+				cell := ui.Row(c).Fill().AlignItems(ui.Center).Children(func() {
+					if column == 0 {
+						checked := slices.Contains(a.compareIDs, face.ID())
+						if ui.Checkbox(c, &checked, "").Changed() {
+							if checked && len(a.compareIDs) < 4 {
+								a.compareIDs = append(a.compareIDs, face.ID())
+								a.compareLimit = false
+							} else if checked {
+								a.compareLimit = true
+							} else {
+								a.compareIDs = slices.DeleteFunc(a.compareIDs, func(id string) bool { return id == face.ID() })
+								a.compareLimit = false
+							}
 						}
+					} else if column == 1 {
+						ui.Text(c, face.FullName).SingleLine().Padding(8, 4)
+					} else if face.Family == "" {
+						ui.Text(c, "Family Name 未提供").TextColor(c.Theme().TextMuted).SingleLine()
+					} else {
+						a.previewTextView(c, face, face.Family, a.previewSize, 0, max(44, int(math.Ceil(float64(a.previewSize*1.4))))).Translate(0, -a.previewSize*0.2)
 					}
-				} else if column == 1 {
-					ui.Text(c, face.FullName).SingleLine().Padding(8, 4)
-				} else if face.Family == "" {
-					ui.Text(c, "Family Name 未提供").TextColor(c.Theme().TextMuted).SingleLine()
-				} else {
-					a.previewTextView(c, face, face.Family, a.previewSize, 0, max(44, int(math.Ceil(float64(a.previewSize*1.4))))).Translate(0, -a.previewSize*0.2)
+				})
+				if cell.RowDoubleClicked() {
+					path, err := windows.UTF16PtrFromString(face.Path)
+					if err == nil {
+						err = windows.ShellExecute(0, nil, path, nil, nil, windows.SW_SHOWNORMAL)
+					}
+					if err != nil {
+						a.errors = append(a.errors, "打开字体文件失败: "+err.Error())
+						a.showErrors = true
+					}
 				}
 			}).Grow(1).Changed() {
 				if a.selectedRow >= 0 && a.selectedRow < len(a.rows) {
