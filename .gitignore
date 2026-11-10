@@ -1,0 +1,4 @@
+plan/
+.cache/
+dist/
+*.exe

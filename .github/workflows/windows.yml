@@ -1,0 +1,157 @@
+name: Windows
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    env:
+      CGO_ENABLED: '0'
+      GOFLAGS: -mod=readonly
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.3'
+          cache: true
+      - name: Check version and PR title
+        id: version
+        shell: pwsh
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PREVIOUS_SHA: ${{ github.event.before }}
+        run: |
+          $version = (Get-Content mygo.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'mygo.json version must be MAJOR.MINOR.PATCH' }
+          if ($env:GITHUB_EVENT_NAME -eq 'pull_request' -and $env:PR_TITLE -notmatch '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: .+') {
+            throw 'PR title must follow Angular commit format'
+          }
+          if ($version -ne '0.0.0' -and !(Test-Path "releases/v$version.md")) {
+            throw "Missing releases/v$version.md"
+          }
+          $release = 'false'
+          if ($env:GITHUB_EVENT_NAME -eq 'push' -and $version -ne '0.0.0') {
+            $previous = ''
+            if ($env:PREVIOUS_SHA -and $env:PREVIOUS_SHA -ne ('0' * 40)) {
+              $old = git show "${env:PREVIOUS_SHA}:mygo.json" 2>$null
+              if ($LASTEXITCODE -eq 0) { $previous = ($old | ConvertFrom-Json).version }
+            }
+            if ($previous -ne $version) { $release = 'true' }
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "release=$release" >> $env:GITHUB_OUTPUT
+      - name: Check Go formatting
+        shell: pwsh
+        run: |
+          $files = git ls-files -- '*.go'
+          $unformatted = $files | ForEach-Object { gofmt -l $_ }
+          if ($unformatted) { throw "Unformatted Go files: $($unformatted -join ', ')" }
+      - name: Check Go and MyGo
+        shell: pwsh
+        run: |
+          go vet ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go tool mygo vet
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build portable EXE
+        shell: pwsh
+        run: |
+          ./scripts/build.ps1
+          $files = @(Get-ChildItem -LiteralPath 'dist/windows-amd64' -Force)
+          if ($files.Count -ne 1 -or $files[0].Name -ne 'FontLens.exe' -or $files[0].PSIsContainer) {
+            throw 'Portable build must contain only FontLens.exe'
+          }
+      - name: Check executable behavior and startup
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $exe = (Resolve-Path 'dist/windows-amd64/FontLens.exe').Path
+          $selfCheck = Start-Process -FilePath $exe -ArgumentList '--self-check' -Wait -PassThru -WindowStyle Hidden
+          if ($selfCheck.ExitCode -ne 0) { throw "EXE self-check failed with code $($selfCheck.ExitCode)" }
+          $versionOutput = Join-Path $env:RUNNER_TEMP 'fontlens-version.txt'
+          $versionCheck = Start-Process -FilePath $exe -ArgumentList '--version' -RedirectStandardOutput $versionOutput -Wait -PassThru -WindowStyle Hidden
+          if ($versionCheck.ExitCode -ne 0 -or (Get-Content $versionOutput -Raw).Trim() -ne $env:APP_VERSION) {
+            throw "EXE version differs from mygo.json: $env:APP_VERSION"
+          }
+          $app = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+          try {
+            Start-Sleep -Seconds 4
+            $app.Refresh()
+            if ($app.HasExited) { throw "EXE exited during startup with code $($app.ExitCode)" }
+          } finally {
+            $app.Refresh()
+            if (!$app.HasExited) { Stop-Process -Id $app.Id }
+          }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: FontLens-windows-x64
+          path: dist/windows-amd64/FontLens.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    if: github.event_name == 'push' && needs.build.outputs.release == 'true'
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          name: FontLens-windows-x64
+          path: release-asset
+      - name: Create and verify release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $tag = "v$env:RELEASE_VERSION"
+          $asset = "FontLens-$tag-win-x64.exe"
+          $path = Join-Path 'release-asset' $asset
+          Move-Item -LiteralPath 'release-asset/FontLens.exe' -Destination $path
+          $notes = "releases/$tag.md"
+          $existingTag = git rev-parse -q --verify "refs/tags/$tag^{commit}" 2>$null
+          if ($LASTEXITCODE -eq 0 -and $existingTag -ne $env:GITHUB_SHA) {
+            throw "$tag already points to another commit"
+          }
+          $existing = gh release view $tag --json isDraft,assets 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $release = $existing | ConvertFrom-Json
+            if (!$release.isDraft) { throw "$tag is already published" }
+            $found = $release.assets | Where-Object name -eq $asset
+            if (!$found) { gh release upload $tag $path }
+            elseif ($found.size -ne (Get-Item -LiteralPath $path).Length) { throw 'Existing draft asset size differs' }
+          } else {
+            gh release create $tag $path --draft --target $env:GITHUB_SHA --title $tag --notes-file $notes
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Draft release creation or upload failed' }
+          $verified = gh release view $tag --json isDraft,assets,tagName | ConvertFrom-Json
+          $verifiedAsset = $verified.assets | Where-Object name -eq $asset
+          if (!$verified.isDraft -or $verified.tagName -ne $tag -or !$verifiedAsset -or $verifiedAsset.size -ne (Get-Item -LiteralPath $path).Length) {
+            throw 'Draft release verification failed'
+          }
+          gh release edit $tag --draft=false
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
+          $published = gh release view $tag --json isDraft | ConvertFrom-Json
+          if ($published.isDraft) { throw 'Release is still a draft' }
