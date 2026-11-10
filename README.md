@@ -47,7 +47,7 @@ go tool mygo vet
 
 变更通过面向 `main` 的 PR 合并，PR 标题遵循 Angular Commit Message Guidelines。Windows CI 执行格式检查、Go/MyGo 静态检查、便携单 EXE 构建、版本校验、自检与启动检查，并保留 7 天构建产物。
 
-`mygo.json` 是版本号的唯一来源，当前 `0.0.0` 用于项目初始化。正式发布时，通过版本 PR 更新版本号并添加 `releases/vX.Y.Z.md`；合并后 CI 构建并验证该提交，创建 Release 并上传 `FontLens-vX.Y.Z-win-x64.exe`。普通 PR 不触发正式发布。
+`mygo.json` 是版本号的唯一来源，当前版本为 `0.1.0`。正式发布时，通过版本 PR 更新版本号并添加 `releases/vX.Y.Z.md`；合并后 CI 构建并验证该提交，创建 Release 并上传 `FontLens-vX.Y.Z-win-x64.exe`。普通 PR 不触发正式发布。
 
 ## 源码结构
 
