@@ -137,11 +137,6 @@ func (a *appState) sidebar(c *ui.Context) {
 				a.cancelScan()
 			}
 		}
-		if slices.Contains(a.sources, a.scope) {
-			if ui.Button(c, "移除当前来源").Clicked() {
-				a.removeFolder(a.scope)
-			}
-		}
 		if len(a.errors) > 0 && ui.Button(c, fmt.Sprintf("读取错误 (%d)", len(a.errors))).Clicked() {
 			a.showErrors = !a.showErrors
 		}
