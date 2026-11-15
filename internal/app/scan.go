@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"fontlens/internal/fonts"
 )
@@ -63,15 +64,18 @@ func (a *appState) refresh() {
 			face   fonts.Entry
 			system bool
 		}
-		batch := make([]scanFace, 0, 32)
+		batch := make([]scanFace, 0, 512)
+		var directories, messages []string
+		lastFlush := time.Now()
 		flush := func() {
-			if len(batch) == 0 {
+			if len(batch)+len(directories)+len(messages) == 0 || ctx.Err() != nil {
 				return
 			}
-			ready := append([]scanFace(nil), batch...)
-			batch = batch[:0]
+			ready, dirs, errors := batch, directories, messages
+			done := make(chan struct{})
 			a.window.Update(func() {
-				if current != a.scanID {
+				defer close(done)
+				if current != a.scanID || ctx.Err() != nil {
 					return
 				}
 				for _, item := range ready {
@@ -90,8 +94,30 @@ func (a *appState) refresh() {
 						a.addCount(face)
 					}
 				}
-				a.rebuild()
+				for _, path := range dirs {
+					parent := filepath.Dir(path)
+					if !slices.Contains(a.dirs[parent], path) {
+						a.dirs[parent] = append(a.dirs[parent], path)
+					}
+				}
+				a.errors = append(a.errors, errors...)
+				if len(ready) > 0 {
+					a.rebuild()
+				}
 			})
+			// Keep at most one scan update queued so cached reads cannot flood the UI thread.
+			select {
+			case <-done:
+				batch = batch[:0]
+				directories, messages = directories[:0], messages[:0]
+				lastFlush = time.Now()
+			case <-ctx.Done():
+			}
+		}
+		flushIfReady := func() {
+			if len(batch)+len(directories)+len(messages) >= cap(batch) || time.Since(lastFlush) >= 100*time.Millisecond {
+				flush()
+			}
 		}
 		enqueue := func(face fonts.Entry, system bool) {
 			id := face.ID()
@@ -100,16 +126,11 @@ func (a *appState) refresh() {
 			}
 			seen[id] = struct{}{}
 			batch = append(batch, scanFace{face: face, system: system})
-			if len(batch) == cap(batch) {
-				flush()
-			}
+			flushIfReady()
 		}
 		report := func(message string) {
-			a.window.Update(func() {
-				if current == a.scanID {
-					a.errors = append(a.errors, message)
-				}
-			})
+			messages = append(messages, message)
+			flushIfReady()
 		}
 		wanted := make(map[string]map[int]bool)
 		if err := fonts.SystemFaces(ctx, func(path string, index int) {
@@ -152,15 +173,8 @@ func (a *appState) refresh() {
 				if path == root {
 					return
 				}
-				a.window.Update(func() {
-					if current != a.scanID {
-						return
-					}
-					parent := filepath.Dir(path)
-					if !slices.Contains(a.dirs[parent], path) {
-						a.dirs[parent] = append(a.dirs[parent], path)
-					}
-				})
+				directories = append(directories, path)
+				flushIfReady()
 			}, func(face fonts.Entry) {
 				enqueue(face, false)
 			}, func(path string, err error) {

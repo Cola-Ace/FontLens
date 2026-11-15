@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -41,8 +42,9 @@ func within(root, path string) bool {
 func (a *appState) rebuild() {
 	a.rows = a.rows[:0]
 	seen := make(map[string]struct{})
+	query := strings.ToLower(a.query)
 	for _, face := range a.faces {
-		if a.inScope(face) && (a.format == "" || face.Format == a.format) && strings.Contains(strings.ToLower(face.FullName), strings.ToLower(a.query)) {
+		if a.inScope(face) && (a.format == "" || face.Format == a.format) && strings.Contains(strings.ToLower(face.FullName), query) {
 			key := fontNameKey(face)
 			if _, exists := seen[key]; exists {
 				continue
@@ -53,19 +55,32 @@ func (a *appState) rebuild() {
 	}
 	if a.sortMode != 0 {
 		nameOrder := collate.New(language.Chinese, collate.IgnoreCase, collate.Numeric)
-		slices.SortStableFunc(a.rows, func(left, right fonts.Entry) int {
-			order := nameOrder.CompareString(left.FullName, right.FullName)
+		var buffer collate.Buffer
+		type sortRow struct {
+			face fonts.Entry
+			name []byte
+			path string
+		}
+		ordered := make([]sortRow, len(a.rows))
+		for i, face := range a.rows {
+			ordered[i] = sortRow{face: face, name: nameOrder.KeyFromString(&buffer, face.FullName), path: strings.ToLower(face.Path)}
+		}
+		slices.SortStableFunc(ordered, func(left, right sortRow) int {
+			order := bytes.Compare(left.name, right.name)
 			if order == 0 {
-				order = strings.Compare(strings.ToLower(left.Path), strings.ToLower(right.Path))
+				order = strings.Compare(left.path, right.path)
 			}
 			if order == 0 {
-				order = left.Index - right.Index
+				order = left.face.Index - right.face.Index
 			}
-			if a.sortMode == 2 && !strings.EqualFold(left.FullName, right.FullName) {
+			if a.sortMode == 2 && !strings.EqualFold(left.face.FullName, right.face.FullName) {
 				return -order
 			}
 			return order
 		})
+		for i, row := range ordered {
+			a.rows[i] = row.face
+		}
 	}
 	a.selectedRow = -1
 	for i := range a.rows {

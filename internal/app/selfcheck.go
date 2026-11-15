@@ -134,19 +134,21 @@ func checkScopeCounts() error {
 }
 
 func checkNameSorting() error {
-	app := appState{scope: "all", faces: []fonts.Entry{
-		{Path: "font10.ttf", FullName: "Font 10"},
-		{Path: "font2.ttf", FullName: "font 2"},
-	}}
-	app.sortMode = 1
-	app.rebuild()
-	if app.rows[0].FullName != "font 2" {
-		return fmt.Errorf("natural name ascending sort failed")
-	}
-	app.sortMode = 2
-	app.rebuild()
-	if app.rows[0].FullName != "Font 10" {
-		return fmt.Errorf("natural name descending sort failed")
+	for _, names := range [][2]string{{"Font 10", "font 2"}, {"字体 10", "字体 2"}, {"École 10", "école 2"}, {"Font 2", "font 02"}} {
+		app := appState{scope: "all", faces: []fonts.Entry{
+			{Path: "b.ttf", FullName: names[0]},
+			{Path: "a.ttf", FullName: names[1]},
+		}}
+		app.sortMode = 1
+		app.rebuild()
+		if app.rows[0].FullName != names[1] {
+			return fmt.Errorf("natural name ascending sort failed: %v", names)
+		}
+		app.sortMode = 2
+		app.rebuild()
+		if app.rows[0].FullName != names[0] {
+			return fmt.Errorf("natural name descending sort failed: %v", names)
+		}
 	}
 	return nil
 }
