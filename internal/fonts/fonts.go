@@ -354,22 +354,7 @@ func readNames(data []byte) []NameRecord {
 			continue
 		}
 		raw := data[start : start+length]
-		if name.Platform == 0 || name.Platform == 3 {
-			if len(raw)%2 == 0 {
-				units := make([]uint16, len(raw)/2)
-				for j := range units {
-					units[j] = binary.BigEndian.Uint16(raw[j*2:])
-				}
-				name.Value = string(utf16.Decode(units))
-				name.Decoded = true
-			}
-		} else if name.Platform == 1 && name.Encoding == 0 {
-			name.Value = tables.DecodeMacintosh(raw)
-			name.Decoded = true
-		} else if utf8.Valid(raw) {
-			name.Value = string(raw)
-			name.Decoded = true
-		}
+		name.Value, name.Decoded = decodeName(raw, name)
 		if !name.Decoded {
 			name.Value = fmt.Sprintf("解析失败 · 原始字节 % X", raw)
 		}
@@ -381,12 +366,14 @@ func readNames(data []byte) []NameRecord {
 func preferredName(records []NameRecord, id uint16) string {
 	best, score := "", -1
 	for _, record := range records {
-		if record.ID != id || !record.Decoded || record.Value == "" {
+		if record.ID != id || !record.Decoded || record.Value == "" || shadowedName(record, records) {
 			continue
 		}
 		n := 0
 		switch {
-		case record.Platform == 3 && record.Language == 0x0804:
+		case record.Platform == 3 && record.Language == 0x0804 ||
+			strings.EqualFold(record.LanguageTag, "zh-CN") || strings.EqualFold(record.LanguageTag, "zh-Hans") ||
+			strings.HasPrefix(strings.ToLower(record.LanguageTag), "zh-hans-"):
 			n = 4
 		case record.Platform == 3 && record.Language == 0x0409:
 			n = 3
