@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"image"
@@ -490,6 +491,46 @@ func checkStore(path string, faces []fonts.Face) error {
 	cached, found := cache.Coverage(key)
 	if !found || cached.Codepoints != result.Codepoints || len(cached.Blocks) != len(result.Blocks) {
 		return fmt.Errorf("coverage cache mismatch")
+	}
+	records := make([]store.FaceRecord, 130)
+	for i := range records {
+		entry := entries[0]
+		entry.Path = fmt.Sprintf("%s.batch-%d", path, i)
+		records[i] = store.FaceRecord{Path: entry.Path, Size: entry.Size, Modified: entry.Modified, Faces: []fonts.Entry{entry}}
+	}
+	if err := cache.SaveFacesBatch(context.Background(), records); err != nil {
+		return fmt.Errorf("font cache batch write: %w", err)
+	}
+	for _, record := range records {
+		if loaded, ok := cache.Faces(record.Path, record.Size, record.Modified); !ok || !slices.Equal(loaded, record.Faces) {
+			return fmt.Errorf("font cache batch record mismatch")
+		}
+	}
+	records[0].Faces[0].FullName = "Updated batch entry"
+	if err := cache.SaveFacesBatch(context.Background(), records[:1]); err != nil {
+		return fmt.Errorf("font cache batch update: %w", err)
+	}
+	if loaded, ok := cache.Faces(records[0].Path, records[0].Size, records[0].Modified); !ok || !slices.Equal(loaded, records[0].Faces) {
+		return fmt.Errorf("font cache batch update mismatch")
+	}
+	if err := cache.SaveFacesBatch(ctx, records); !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("font cache batch cancellation: %v", err)
+	}
+	checkDB, err := sql.Open("sqlite", filepath.Join(dir, "index.db"))
+	if err != nil {
+		return err
+	}
+	defer checkDB.Close()
+	if _, err := checkDB.Exec(`CREATE TRIGGER reject_batch BEFORE INSERT ON faces
+		WHEN NEW.path='reject-batch' BEGIN SELECT RAISE(ABORT, 'batch rollback check'); END`); err != nil {
+		return err
+	}
+	rollbackRecords := []store.FaceRecord{{Path: "rollback-batch", Faces: entries}, {Path: "reject-batch", Faces: entries}}
+	if err := cache.SaveFacesBatch(context.Background(), rollbackRecords); err == nil {
+		return fmt.Errorf("font cache batch accepted rejected record")
+	}
+	if _, ok := cache.Faces("rollback-batch", 0, 0); ok {
+		return fmt.Errorf("font cache batch retained partial writes")
 	}
 	var readers sync.WaitGroup
 	failures := make(chan error, 8)

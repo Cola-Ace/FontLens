@@ -13,7 +13,7 @@ import (
 	"fontlens/internal/store"
 )
 
-func (a *appState) readFaces(path string, cached *store.FaceCache) ([]fonts.Entry, error) {
+func (a *appState) readFaces(path string, cached *store.FaceCache, pending *[]store.FaceRecord) ([]fonts.Entry, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -29,7 +29,7 @@ func (a *appState) readFaces(path string, cached *store.FaceCache) ([]fonts.Entr
 	}
 	faces, err := fonts.ReadIndex(path)
 	if err == nil && a.store != nil {
-		_ = a.store.SaveFaces(path, info.Size(), info.ModTime().UnixNano(), faces)
+		*pending = append(*pending, store.FaceRecord{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano(), Faces: faces})
 	}
 	return faces, err
 }
@@ -68,8 +68,20 @@ func (a *appState) refresh() {
 		if a.store != nil {
 			cached, _ = a.store.LoadFaces(ctx)
 		}
+		pending := make([]store.FaceRecord, 0, 128)
+		flushCache := func() {
+			if len(pending) > 0 {
+				_ = a.store.SaveFacesBatch(context.Background(), pending)
+				clear(pending)
+				pending = pending[:0]
+			}
+		}
 		readFaces := func(path string) ([]fonts.Entry, error) {
-			return a.readFaces(path, cached)
+			faces, err := a.readFaces(path, cached, &pending)
+			if len(pending) >= cap(pending) {
+				flushCache()
+			}
+			return faces, err
 		}
 		seen := make(map[string]struct{})
 		type scanFace struct {
@@ -196,6 +208,7 @@ func (a *appState) refresh() {
 			})
 			flush()
 		}
+		flushCache()
 		a.window.Update(func() {
 			if current == a.scanID {
 				if ctx.Err() == nil {

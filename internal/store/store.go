@@ -19,6 +19,11 @@ import (
 const version = 10
 
 var gzipReaders sync.Pool
+var gzipWriters sync.Pool
+
+const saveFacesSQL = `INSERT INTO faces(path,size,modified,version,payload) VALUES(?,?,?,?,?)
+	ON CONFLICT(path) DO UPDATE SET size=excluded.size, modified=excluded.modified,
+	version=excluded.version, payload=excluded.payload`
 
 type Store struct{ db *sql.DB }
 
@@ -28,6 +33,45 @@ type cachedFaces struct {
 }
 
 type FaceCache struct{ files map[string]cachedFaces }
+
+type FaceRecord struct {
+	Path           string
+	Size, Modified int64
+	Faces          []fonts.Entry
+}
+
+func (s *Store) SaveFacesBatch(ctx context.Context, records []FaceRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	payloads := make([][]byte, len(records))
+	for i, record := range records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var err error
+		payloads[i], err = encode(record.Faces)
+		if err != nil {
+			return err
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statement, err := tx.PrepareContext(ctx, saveFacesSQL)
+	if err != nil {
+		return err
+	}
+	defer statement.Close()
+	for i, record := range records {
+		if _, err := statement.ExecContext(ctx, record.Path, record.Size, record.Modified, version, payloads[i]); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
 
 func (s *Store) LoadFaces(ctx context.Context) (*FaceCache, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT path,size,modified,payload FROM faces WHERE version=?`, version)
@@ -103,9 +147,7 @@ func (s *Store) SaveFaces(path string, size, modified int64, faces []fonts.Entry
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT INTO faces(path,size,modified,version,payload) VALUES(?,?,?,?,?)
-		ON CONFLICT(path) DO UPDATE SET size=excluded.size, modified=excluded.modified,
-		version=excluded.version, payload=excluded.payload`, path, size, modified, version, payload)
+	_, err = s.db.Exec(saveFacesSQL, path, size, modified, version, payload)
 	return err
 }
 
@@ -134,10 +176,17 @@ func (s *Store) SaveCoverage(key string, result coverage.Result) error {
 
 func encode(value any) ([]byte, error) {
 	var buffer bytes.Buffer
-	zip, err := gzip.NewWriterLevel(&buffer, gzip.BestSpeed)
-	if err != nil {
-		return nil, err
+	zip, _ := gzipWriters.Get().(*gzip.Writer)
+	if zip == nil {
+		var err error
+		zip, err = gzip.NewWriterLevel(&buffer, gzip.BestSpeed)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		zip.Reset(&buffer)
 	}
+	defer gzipWriters.Put(zip)
 	if err := gob.NewEncoder(zip).Encode(value); err != nil {
 		zip.Close()
 		return nil, err
