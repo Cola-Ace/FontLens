@@ -10,14 +10,19 @@ import (
 	"time"
 
 	"fontlens/internal/fonts"
+	"fontlens/internal/store"
 )
 
-func (a *appState) readFaces(path string) ([]fonts.Entry, error) {
+func (a *appState) readFaces(path string, cached *store.FaceCache) ([]fonts.Entry, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
 	}
-	if a.store != nil {
+	if cached != nil {
+		if faces, found := cached.Faces(path, info.Size(), info.ModTime().UnixNano()); found {
+			return faces, nil
+		}
+	} else if a.store != nil {
 		if faces, found := a.store.Faces(path, info.Size(), info.ModTime().UnixNano()); found {
 			return faces, nil
 		}
@@ -59,6 +64,13 @@ func (a *appState) refresh() {
 	a.recount()
 	roots := slices.Clone(a.sources)
 	go func() {
+		var cached *store.FaceCache
+		if a.store != nil {
+			cached, _ = a.store.LoadFaces(ctx)
+		}
+		readFaces := func(path string) ([]fonts.Entry, error) {
+			return a.readFaces(path, cached)
+		}
 		seen := make(map[string]struct{})
 		type scanFace struct {
 			face   fonts.Entry
@@ -152,7 +164,7 @@ func (a *appState) refresh() {
 			if ctx.Err() != nil {
 				break
 			}
-			faces, err := a.readFaces(path)
+			faces, err := readFaces(path)
 			if err != nil {
 				report(fmt.Sprintf("%s: %v", path, err))
 				continue
@@ -171,7 +183,7 @@ func (a *appState) refresh() {
 			if _, err := os.Stat(root); err != nil {
 				continue
 			}
-			_ = fonts.Scan(ctx, root, a.readFaces, func(path string) {
+			_ = fonts.Scan(ctx, root, readFaces, func(path string) {
 				if path == root {
 					return
 				}

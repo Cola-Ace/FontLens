@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"database/sql"
 	"encoding/gob"
 	"fmt"
@@ -20,6 +21,43 @@ const version = 10
 var gzipReaders sync.Pool
 
 type Store struct{ db *sql.DB }
+
+type cachedFaces struct {
+	size, modified int64
+	payload        []byte
+}
+
+type FaceCache struct{ files map[string]cachedFaces }
+
+func (s *Store) LoadFaces(ctx context.Context) (*FaceCache, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT path,size,modified,payload FROM faces WHERE version=?`, version)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cache := &FaceCache{files: make(map[string]cachedFaces)}
+	for rows.Next() {
+		var path string
+		var file cachedFaces
+		if err := rows.Scan(&path, &file.size, &file.modified, &file.payload); err != nil {
+			return nil, err
+		}
+		cache.files[path] = file
+	}
+	return cache, rows.Err()
+}
+
+func (c *FaceCache) Faces(path string, size, modified int64) ([]fonts.Entry, bool) {
+	file, found := c.files[path]
+	if !found || file.size != size || file.modified != modified {
+		return nil, false
+	}
+	var faces []fonts.Entry
+	if decode(file.payload, &faces) != nil {
+		return nil, false
+	}
+	return faces, true
+}
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {

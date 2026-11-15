@@ -398,6 +398,26 @@ func checkStore(path string, faces []fonts.Face) error {
 	if !found || !slices.Equal(reloaded, entries) {
 		return fmt.Errorf("font index cache mismatch")
 	}
+	snapshot, err := cache.LoadFaces(context.Background())
+	if err != nil {
+		return fmt.Errorf("font cache snapshot: %w", err)
+	}
+	if loaded, ok := snapshot.Faces(path, face.Size, face.Modified); !ok || !slices.Equal(loaded, entries) {
+		return fmt.Errorf("font cache snapshot mismatch")
+	}
+	for _, changed := range [][2]int64{{face.Size + 1, face.Modified}, {face.Size, face.Modified + 1}} {
+		if _, ok := snapshot.Faces(path, changed[0], changed[1]); ok {
+			return fmt.Errorf("font cache snapshot accepted changed file")
+		}
+	}
+	if _, ok := snapshot.Faces(path+".missing", face.Size, face.Modified); ok {
+		return fmt.Errorf("font cache snapshot accepted missing file")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := cache.LoadFaces(ctx); err != context.Canceled {
+		return fmt.Errorf("font cache snapshot cancellation: %v", err)
+	}
 	key := coverageKey(face.Entry)
 	result := coverage.Analyze(face.Characters)
 	if err := cache.SaveCoverage(key, result); err != nil {
