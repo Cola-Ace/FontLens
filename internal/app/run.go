@@ -5,7 +5,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 
 	"fontlens/internal/store"
 	"github.com/egoist/mygo"
@@ -31,9 +30,6 @@ func Run() {
 		}
 		fmt.Println("FontLens self-check passed")
 		return
-	}
-	if os.Getenv("GOMEMLIMIT") == "" {
-		debug.SetMemoryLimit(32 << 20)
 	}
 	if os.Getenv("MYGO_GPU") == "" {
 		os.Setenv("MYGO_GPU", "0")
@@ -67,6 +63,7 @@ func Run() {
 		log.Fatal(err)
 	}
 	app.saveSettings()
+	app.releaseDetails()
 	if app.store != nil {
 		app.store.Close()
 	}

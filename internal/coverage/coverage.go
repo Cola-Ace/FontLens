@@ -1,6 +1,7 @@
 package coverage
 
 import (
+	"context"
 	_ "embed"
 	"sort"
 	"strconv"
@@ -92,14 +93,37 @@ func Analyze(characters codepoints.Set) Result {
 }
 
 func AnalyzeWith(characters codepoints.Set, imported []Definition) Result {
+	result, _ := AnalyzeWithContext(context.Background(), characters, imported)
+	return result
+}
+
+func AnalyzeWithContext(ctx context.Context, characters codepoints.Set, imported []Definition) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	blocksOnce.Do(loadBlocks)
-	result := Result{Charsets: Builtin(characters), Codepoints: characters.Count()}
+	charsets, err := builtin(ctx, characters)
+	if err != nil {
+		return Result{}, err
+	}
+	result := Result{Charsets: charsets, Codepoints: characters.Count()}
 	for _, definition := range imported {
-		result.Charsets = append(result.Charsets, measure(definition.Name, definition.Members, characters))
+		row, err := measure(ctx, definition.Name, definition.Members, characters)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Charsets = append(result.Charsets, row)
 	}
 	counts := make([]int, len(blocks))
 	privateCount := 0
+	processed := 0
 	for r := range characters.All() {
+		if processed&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return Result{}, err
+			}
+		}
+		processed++
 		if unicode.Is(unicode.Co, r) {
 			privateCount++
 			continue
@@ -122,7 +146,7 @@ func AnalyzeWith(characters codepoints.Set, imported []Definition) Result {
 	sort.SliceStable(result.Blocks, func(i, j int) bool {
 		return blockPriority(result.Blocks[i].Name) < blockPriority(result.Blocks[j].Name)
 	})
-	return result
+	return result, ctx.Err()
 }
 
 func blockPriority(name string) int {
@@ -163,34 +187,53 @@ func loadBlocks() {
 }
 
 func Builtin(characters codepoints.Set) []Row {
-	return []Row{
-		measure("GB2312 汉字集", gb2312, characters),
-		measure("GBK 汉字集", gbk, characters),
-		measure("GB18030-2022 级别 1（汉字及部首）", gb18030Level1, characters),
-		measure("GB18030-2022 级别 2（汉字及部首）", gb18030Level2, characters),
-		measure("GB18030-2022 级别 3（2024 修订）", gb18030Level3, characters),
-		measure("通用规范汉字表（2013，全部）", tgh, characters),
-		measure("通用规范汉字表（2013，一级）", tghLevel1, characters),
-		measure("通用规范汉字表（2013，二级）", tghLevel2, characters),
-		measure("通用规范汉字表（2013，三级）", tghLevel3, characters),
-		measure("Big5 字符集（Python 3.12 映射）", big5, characters),
-		measure("HKSCS-2016 增补字符集", hkscs, characters),
-		measure("日文 JIS X 0208:1990", jis0208, characters),
-		measure("日文 JIS X 0213:2004", jis0213, characters),
-		measure("韩文 KS X 1001:1992", ks1001, characters),
-		measure("韩文音节（Unicode 17.0）", hangul, characters),
-	}
+	rows, _ := builtin(context.Background(), characters)
+	return rows
 }
 
-func measure(name, members string, characters codepoints.Set) Row {
+func builtin(ctx context.Context, characters codepoints.Set) ([]Row, error) {
+	definitions := [][2]string{
+		{"GB2312 汉字集", gb2312},
+		{"GBK 汉字集", gbk},
+		{"GB18030-2022 级别 1（汉字及部首）", gb18030Level1},
+		{"GB18030-2022 级别 2（汉字及部首）", gb18030Level2},
+		{"GB18030-2022 级别 3（2024 修订）", gb18030Level3},
+		{"通用规范汉字表（2013，全部）", tgh},
+		{"通用规范汉字表（2013，一级）", tghLevel1},
+		{"通用规范汉字表（2013，二级）", tghLevel2},
+		{"通用规范汉字表（2013，三级）", tghLevel3},
+		{"Big5 字符集（Python 3.12 映射）", big5},
+		{"HKSCS-2016 增补字符集", hkscs},
+		{"日文 JIS X 0208:1990", jis0208},
+		{"日文 JIS X 0213:2004", jis0213},
+		{"韩文 KS X 1001:1992", ks1001},
+		{"韩文音节（Unicode 17.0）", hangul},
+	}
+	rows := make([]Row, 0, len(definitions))
+	for _, definition := range definitions {
+		row, err := measure(ctx, definition[0], definition[1], characters)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	return rows, ctx.Err()
+}
+
+func measure(ctx context.Context, name, members string, characters codepoints.Set) (Row, error) {
 	row := Row{Name: name}
 	for _, r := range members {
+		if row.Total&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return Row{}, err
+			}
+		}
 		row.Total++
 		if characters.Contains(r) {
 			row.Covered++
 		}
 	}
-	return makeRow(row.Name, row.Covered, row.Total)
+	return makeRow(row.Name, row.Covered, row.Total), ctx.Err()
 }
 
 func makeRow(name string, covered, total int) Row {

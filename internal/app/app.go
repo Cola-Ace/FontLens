@@ -28,12 +28,18 @@ type appState struct {
 	detailFace        *fonts.Face
 	detailKey         string
 	detailGeneration  int
+	cancelDetails     context.CancelFunc
+	cancelCoverage    context.CancelFunc
 	detailError       string
 	detailLoading     *loadingHint
 	detailPending     *detailResult
 	leftWidth         float32
 	centerWidth       float32
 	sources           []string
+	sourceNames       map[string]string
+	renameOpen        bool
+	renameSource      string
+	renameName        string
 	charsets          []coverage.Definition
 	charsetRevision   int64
 	charsetMessage    string
@@ -44,6 +50,7 @@ type appState struct {
 	tableSort         ui.SortOrder
 	sortSeen          ui.SortOrder
 	faces             []fonts.Entry
+	browserEntries    []browserEntry
 	faceIndex         map[string]int
 	systemIDs         map[string]bool
 	scopeCounts       map[string]map[string]struct{}
@@ -67,6 +74,7 @@ type appState struct {
 	previewSize       float32
 	previewLineHeight float32
 	previewBitmaps    map[string]*ui.Bitmap
+	previewHistory    bitmapHistory
 	previewLast       map[string]*ui.Bitmap
 	previewLoading    map[string]*previewRequest
 	previewWanted     map[string]bool
@@ -125,4 +133,5 @@ func (a *appState) view(c *ui.Context) {
 	}).Fill().Changed() {
 		a.leftWidth = leftWidth
 	}
+	a.renameFolderDialog(c)
 }

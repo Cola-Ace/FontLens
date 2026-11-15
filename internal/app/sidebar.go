@@ -68,10 +68,7 @@ func (a *appState) sidebar(c *ui.Context) {
 			case "custom":
 				label = "自定义文件夹"
 			default:
-				label = filepath.Base(node)
-				if label == string(filepath.Separator) {
-					label = node
-				}
+				label = a.folderName(node)
 				if isSource {
 					rowHeight = 42
 				}
@@ -82,14 +79,26 @@ func (a *appState) sidebar(c *ui.Context) {
 				} else {
 					ui.Box(c).Size(16, 16).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
 						ink := c.Theme().TextMuted
+						if isSource {
+							ink = c.Theme().Accent
+						}
 						if node == a.scope {
 							ink = c.Theme().AccentText
 						}
 						x, y := r.X+1, r.Y+3
 						var folder ui.Path
 						folder.MoveTo(x, y).LineTo(x+5, y).LineTo(x+7, y+2).LineTo(x+13, y+2).LineTo(x+13, y+10).LineTo(x, y+10).Close()
-						p.FillPath(&folder, ink)
-						if a.tree.Open.Has(node) && len(a.treeChildren(node)) > 0 {
+						if isSource || node == "custom" {
+							p.FillPath(&folder, ink)
+						} else {
+							p.StrokePath(&folder, 1.25, ink)
+						}
+						if isSource {
+							var home ui.Path
+							home.MoveTo(x+4, y+6).LineTo(x+6.5, y+4).LineTo(x+9, y+6)
+							home.MoveTo(x+4.5, y+6).LineTo(x+4.5, y+8.5).LineTo(x+8.5, y+8.5).LineTo(x+8.5, y+6)
+							p.StrokePath(&home, 1, c.Theme().Surface)
+						} else if a.tree.Open.Has(node) && len(a.treeChildren(node)) > 0 {
 							var flap ui.Path
 							flap.MoveTo(x+1, y+4).LineTo(x+12, y+4)
 							p.StrokePath(&flap, 1, c.Theme().Surface)
@@ -98,7 +107,7 @@ func (a *appState) sidebar(c *ui.Context) {
 				}
 				if isSource {
 					ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-						ui.Text(c, label).FontSize(12).SingleLine().Tooltip(node)
+						ui.Text(c, label).FontSize(13).Bold().SingleLine().Tooltip(label)
 						ink := c.Theme().TextMuted
 						if node == a.scope {
 							ink = c.Theme().AccentText
@@ -118,6 +127,11 @@ func (a *appState) sidebar(c *ui.Context) {
 				})
 			} else if isSource {
 				row.ContextMenu(func(m *ui.Menu) {
+					if m.Item("重命名…").Chosen() {
+						a.renameSource = node
+						a.renameName = a.folderName(node)
+						a.renameOpen = true
+					}
 					if m.Item("移除该文件夹").Chosen() {
 						a.removeFolder(node)
 					}
@@ -156,8 +170,42 @@ func (a *appState) sidebar(c *ui.Context) {
 	})
 }
 
+func (a *appState) folderName(path string) string {
+	if name := a.sourceNames[path]; name != "" {
+		return name
+	}
+	name := filepath.Base(path)
+	if name == string(filepath.Separator) {
+		return path
+	}
+	return name
+}
+
+func (a *appState) renameFolderDialog(c *ui.Context) {
+	ui.Modal(c, &a.renameOpen, func() {
+		ui.Text(c, "重命名根文件夹").FontSize(18).Bold()
+		ui.Text(c, a.renameSource).TextColor(c.Theme().TextMuted).SingleLine().Tooltip(a.renameSource)
+		input := ui.TextInput(c, &a.renameName).Placeholder("文件夹显示名称").Width(360).AutoFocus()
+		name := strings.TrimSpace(a.renameName)
+		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
+			if ui.Button(c, "取消").Clicked() {
+				a.renameOpen = false
+			}
+			if ui.PrimaryButton(c, "保存").Disabled(name == "").Clicked() || (input.Submitted() && name != "") {
+				if a.sourceNames == nil {
+					a.sourceNames = make(map[string]string)
+				}
+				a.sourceNames[a.renameSource] = name
+				a.saveSettings()
+				a.renameOpen = false
+			}
+		})
+	})
+}
+
 func (a *appState) removeFolder(path string) {
 	a.sources = slices.DeleteFunc(a.sources, func(source string) bool { return source == path })
+	delete(a.sourceNames, path)
 	a.scope = "custom"
 	a.saveSettings()
 	a.refresh()

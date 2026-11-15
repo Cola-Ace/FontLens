@@ -90,11 +90,11 @@ func DecodeWebFont(path string) ([]byte, error) {
 }
 
 func Read(path string) ([]Face, error) {
-	return read(path, -1, false)
+	return read(context.Background(), path, -1, false)
 }
 
 func ReadIndex(path string) ([]Entry, error) {
-	faces, err := read(path, -1, true)
+	faces, err := read(context.Background(), path, -1, true)
 	if err != nil {
 		return nil, err
 	}
@@ -106,17 +106,43 @@ func ReadIndex(path string) ([]Entry, error) {
 }
 
 func ReadFace(path string, index int) (Face, error) {
+	return ReadFaceContext(context.Background(), path, index)
+}
+
+func ReadFaceContext(ctx context.Context, path string, index int) (Face, error) {
 	if index < 0 {
 		return Face{}, fmt.Errorf("face index %d is out of range", index)
 	}
-	faces, err := read(path, index, false)
+	faces, err := read(ctx, path, index, false)
 	if err != nil {
 		return Face{}, err
 	}
 	return faces[0], nil
 }
 
-func read(path string, selected int, indexOnly bool) ([]Face, error) {
+type contextReader struct {
+	opentype.Resource
+	ctx context.Context
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.Resource.Read(p)
+}
+
+func (r contextReader) ReadAt(p []byte, offset int64) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.Resource.ReadAt(p, offset)
+}
+
+func read(ctx context.Context, path string, selected int, indexOnly bool) ([]Face, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -127,19 +153,19 @@ func read(path string, selected int, indexOnly bool) ([]Face, error) {
 		return nil, err
 	}
 	var loaders []*opentype.Loader
-	var directorySource io.ReaderAt = file
+	var directorySource opentype.Resource = contextReader{Resource: file, ctx: ctx}
 	directorySize := info.Size()
 	if strings.EqualFold(filepath.Ext(path), ".woff2") || strings.EqualFold(filepath.Ext(path), ".woff") {
 		sfnt, decodeErr := DecodeWebFont(path)
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
-		reader := bytes.NewReader(sfnt)
+		reader := contextReader{Resource: bytes.NewReader(sfnt), ctx: ctx}
 		directorySource = reader
 		directorySize = int64(len(sfnt))
 		loaders, err = opentype.NewLoaders(reader)
 	} else {
-		loaders, err = opentype.NewLoaders(file)
+		loaders, err = opentype.NewLoaders(directorySource)
 	}
 	if err != nil {
 		return nil, err
@@ -153,6 +179,9 @@ func read(path string, selected int, indexOnly bool) ([]Face, error) {
 	}
 	result := make([]Face, 0, capacity)
 	for index, loader := range loaders {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if selected >= 0 && index != selected {
 			continue
 		}
@@ -204,7 +233,7 @@ func read(path string, selected int, indexOnly bool) ([]Face, error) {
 		}
 		result = append(result, face)
 	}
-	return result, nil
+	return result, ctx.Err()
 }
 
 func readTableDirectory(source io.ReaderAt, faceIndex int) (map[string]Table, error) {
@@ -354,22 +383,7 @@ func readNames(data []byte) []NameRecord {
 			continue
 		}
 		raw := data[start : start+length]
-		if name.Platform == 0 || name.Platform == 3 {
-			if len(raw)%2 == 0 {
-				units := make([]uint16, len(raw)/2)
-				for j := range units {
-					units[j] = binary.BigEndian.Uint16(raw[j*2:])
-				}
-				name.Value = string(utf16.Decode(units))
-				name.Decoded = true
-			}
-		} else if name.Platform == 1 && name.Encoding == 0 {
-			name.Value = tables.DecodeMacintosh(raw)
-			name.Decoded = true
-		} else if utf8.Valid(raw) {
-			name.Value = string(raw)
-			name.Decoded = true
-		}
+		name.Value, name.Decoded = decodeName(raw, name)
 		if !name.Decoded {
 			name.Value = fmt.Sprintf("解析失败 · 原始字节 % X", raw)
 		}
@@ -381,12 +395,14 @@ func readNames(data []byte) []NameRecord {
 func preferredName(records []NameRecord, id uint16) string {
 	best, score := "", -1
 	for _, record := range records {
-		if record.ID != id || !record.Decoded || record.Value == "" {
+		if record.ID != id || !record.Decoded || record.Value == "" || shadowedName(record, records) {
 			continue
 		}
 		n := 0
 		switch {
-		case record.Platform == 3 && record.Language == 0x0804:
+		case record.Platform == 3 && record.Language == 0x0804 ||
+			strings.EqualFold(record.LanguageTag, "zh-CN") || strings.EqualFold(record.LanguageTag, "zh-Hans") ||
+			strings.HasPrefix(strings.ToLower(record.LanguageTag), "zh-hans-"):
 			n = 4
 		case record.Platform == 3 && record.Language == 0x0409:
 			n = 3

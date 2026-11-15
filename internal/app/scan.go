@@ -7,23 +7,29 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"fontlens/internal/fonts"
+	"fontlens/internal/store"
 )
 
-func (a *appState) readFaces(path string) ([]fonts.Entry, error) {
+func (a *appState) readFaces(path string, cached *store.FaceCache, pending *[]store.FaceRecord) ([]fonts.Entry, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
 	}
-	if a.store != nil {
+	if cached != nil {
+		if faces, found := cached.Faces(path, info.Size(), info.ModTime().UnixNano()); found {
+			return faces, nil
+		}
+	} else if a.store != nil {
 		if faces, found := a.store.Faces(path, info.Size(), info.ModTime().UnixNano()); found {
 			return faces, nil
 		}
 	}
 	faces, err := fonts.ReadIndex(path)
 	if err == nil && a.store != nil {
-		_ = a.store.SaveFaces(path, info.Size(), info.ModTime().UnixNano(), faces)
+		*pending = append(*pending, store.FaceRecord{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano(), Faces: faces})
 	}
 	return faces, err
 }
@@ -58,20 +64,43 @@ func (a *appState) refresh() {
 	a.recount()
 	roots := slices.Clone(a.sources)
 	go func() {
+		var cached *store.FaceCache
+		if a.store != nil {
+			cached, _ = a.store.LoadFaces(ctx)
+		}
+		pending := make([]store.FaceRecord, 0, 128)
+		flushCache := func() {
+			if len(pending) > 0 {
+				_ = a.store.SaveFacesBatch(context.Background(), pending)
+				clear(pending)
+				pending = pending[:0]
+			}
+		}
+		readFaces := func(path string) ([]fonts.Entry, error) {
+			faces, err := a.readFaces(path, cached, &pending)
+			if len(pending) >= cap(pending) {
+				flushCache()
+			}
+			return faces, err
+		}
 		seen := make(map[string]struct{})
 		type scanFace struct {
 			face   fonts.Entry
 			system bool
 		}
-		batch := make([]scanFace, 0, 32)
+		batch := make([]scanFace, 0, 512)
+		var directories, messages []string
+		lastFlush := time.Now()
+		var lastRebuild time.Time
 		flush := func() {
-			if len(batch) == 0 {
+			if len(batch)+len(directories)+len(messages) == 0 || ctx.Err() != nil {
 				return
 			}
-			ready := append([]scanFace(nil), batch...)
-			batch = batch[:0]
+			ready, dirs, errors := batch, directories, messages
+			done := make(chan struct{})
 			a.window.Update(func() {
-				if current != a.scanID {
+				defer close(done)
+				if current != a.scanID || ctx.Err() != nil {
 					return
 				}
 				for _, item := range ready {
@@ -90,8 +119,31 @@ func (a *appState) refresh() {
 						a.addCount(face)
 					}
 				}
-				a.rebuild()
+				for _, path := range dirs {
+					parent := filepath.Dir(path)
+					if !slices.Contains(a.dirs[parent], path) {
+						a.dirs[parent] = append(a.dirs[parent], path)
+					}
+				}
+				a.errors = append(a.errors, errors...)
+				if len(ready) > 0 && time.Since(lastRebuild) >= 250*time.Millisecond {
+					a.rebuild()
+					lastRebuild = time.Now()
+				}
 			})
+			// Keep at most one scan update queued so cached reads cannot flood the UI thread.
+			select {
+			case <-done:
+				batch = batch[:0]
+				directories, messages = directories[:0], messages[:0]
+				lastFlush = time.Now()
+			case <-ctx.Done():
+			}
+		}
+		flushIfReady := func() {
+			if len(batch)+len(directories)+len(messages) >= cap(batch) || time.Since(lastFlush) >= 100*time.Millisecond {
+				flush()
+			}
 		}
 		enqueue := func(face fonts.Entry, system bool) {
 			id := face.ID()
@@ -100,16 +152,11 @@ func (a *appState) refresh() {
 			}
 			seen[id] = struct{}{}
 			batch = append(batch, scanFace{face: face, system: system})
-			if len(batch) == cap(batch) {
-				flush()
-			}
+			flushIfReady()
 		}
 		report := func(message string) {
-			a.window.Update(func() {
-				if current == a.scanID {
-					a.errors = append(a.errors, message)
-				}
-			})
+			messages = append(messages, message)
+			flushIfReady()
 		}
 		wanted := make(map[string]map[int]bool)
 		if err := fonts.SystemFaces(ctx, func(path string, index int) {
@@ -129,7 +176,7 @@ func (a *appState) refresh() {
 			if ctx.Err() != nil {
 				break
 			}
-			faces, err := a.readFaces(path)
+			faces, err := readFaces(path)
 			if err != nil {
 				report(fmt.Sprintf("%s: %v", path, err))
 				continue
@@ -148,19 +195,12 @@ func (a *appState) refresh() {
 			if _, err := os.Stat(root); err != nil {
 				continue
 			}
-			_ = fonts.Scan(ctx, root, a.readFaces, func(path string) {
+			_ = fonts.Scan(ctx, root, readFaces, func(path string) {
 				if path == root {
 					return
 				}
-				a.window.Update(func() {
-					if current != a.scanID {
-						return
-					}
-					parent := filepath.Dir(path)
-					if !slices.Contains(a.dirs[parent], path) {
-						a.dirs[parent] = append(a.dirs[parent], path)
-					}
-				})
+				directories = append(directories, path)
+				flushIfReady()
 			}, func(face fonts.Entry) {
 				enqueue(face, false)
 			}, func(path string, err error) {
@@ -168,6 +208,7 @@ func (a *appState) refresh() {
 			})
 			flush()
 		}
+		flushCache()
 		a.window.Update(func() {
 			if current == a.scanID {
 				if ctx.Err() == nil {
