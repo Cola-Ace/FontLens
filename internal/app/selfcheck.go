@@ -31,6 +31,9 @@ func selfCheck(fontPath, sample string) error {
 	if err := checkFontDeduplication(); err != nil {
 		return err
 	}
+	if err := checkBrowserMetadata(); err != nil {
+		return err
+	}
 	for _, preset := range preview.Presets {
 		if strings.ContainsAny(preset.Text, "\r\n") {
 			return fmt.Errorf("preview preset %s contains a line break", preset.Label)
@@ -182,6 +185,33 @@ func checkFontDeduplication() error {
 	app.rebuild()
 	if len(app.rows) != 1 || app.rows[0].ID() != app.faces[1].ID() {
 		return fmt.Errorf("font deduplication directory filter failed")
+	}
+	return nil
+}
+
+func checkBrowserMetadata() error {
+	app := appState{scope: "all", sortMode: 1, faces: []fonts.Entry{
+		{Path: "first.ttf", FullName: "Font 10"},
+		{Path: "second.ttf", FullName: "Font 2"},
+	}}
+	app.rebuild()
+	app.faces[0].FullName = "Font 1"
+	app.selectedID = app.faces[0].ID()
+	app.rebuild()
+	if app.rows[0].FullName != "Font 1" || app.selectedRow != 0 {
+		return fmt.Errorf("changed browser metadata was not refreshed")
+	}
+	slices.Reverse(app.faces)
+	app.query = "FONT 1"
+	app.rebuild()
+	if len(app.rows) != 1 || app.rows[0].ID() != app.selectedID {
+		return fmt.Errorf("reordered browser metadata or case-insensitive search mismatch")
+	}
+	app.faces = app.faces[:1]
+	app.query = ""
+	app.rebuild()
+	if len(app.rows) != 1 || app.rows[0].FullName != "Font 2" || app.selectedID != "" || len(app.browserEntries) != 1 {
+		return fmt.Errorf("removed browser metadata or selection mismatch")
 	}
 	return nil
 }

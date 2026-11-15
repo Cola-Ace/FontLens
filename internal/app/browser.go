@@ -39,34 +39,52 @@ func within(root, path string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+type browserEntry struct {
+	face                fonts.Entry
+	id, name, key, path string
+	order               []byte
+}
+
 func (a *appState) rebuild() {
 	a.rows = a.rows[:0]
 	seen := make(map[string]struct{})
 	query := strings.ToLower(a.query)
-	for _, face := range a.faces {
-		if a.inScope(face) && (a.format == "" || face.Format == a.format) && strings.Contains(strings.ToLower(face.FullName), query) {
-			key := fontNameKey(face)
-			if _, exists := seen[key]; exists {
+	for len(a.browserEntries) < len(a.faces) {
+		a.browserEntries = append(a.browserEntries, browserEntry{})
+	}
+	clear(a.browserEntries[len(a.faces):])
+	a.browserEntries = a.browserEntries[:len(a.faces)]
+	ordered := make([]int, 0, len(a.faces))
+	var nameOrder *collate.Collator
+	var buffer collate.Buffer
+	for i, face := range a.faces {
+		entry := &a.browserEntries[i]
+		if entry.face != face || entry.id == "" {
+			name := strings.ToLower(face.FullName)
+			*entry = browserEntry{face: face, id: face.ID(), name: name, key: strings.TrimSpace(name), path: strings.ToLower(face.Path)}
+			if entry.key == "" {
+				entry.key = entry.id
+			}
+		}
+		if a.inScope(face) && (a.format == "" || face.Format == a.format) && strings.Contains(entry.name, query) {
+			if _, exists := seen[entry.key]; exists {
 				continue
 			}
-			seen[key] = struct{}{}
-			a.rows = append(a.rows, face)
+			seen[entry.key] = struct{}{}
+			if a.sortMode != 0 && entry.order == nil {
+				if nameOrder == nil {
+					nameOrder = collate.New(language.Chinese, collate.IgnoreCase, collate.Numeric)
+				}
+				buffer.Reset()
+				entry.order = bytes.Clone(nameOrder.KeyFromString(&buffer, face.FullName))
+			}
+			ordered = append(ordered, i)
 		}
 	}
 	if a.sortMode != 0 {
-		nameOrder := collate.New(language.Chinese, collate.IgnoreCase, collate.Numeric)
-		var buffer collate.Buffer
-		type sortRow struct {
-			face fonts.Entry
-			name []byte
-			path string
-		}
-		ordered := make([]sortRow, len(a.rows))
-		for i, face := range a.rows {
-			ordered[i] = sortRow{face: face, name: nameOrder.KeyFromString(&buffer, face.FullName), path: strings.ToLower(face.Path)}
-		}
-		slices.SortStableFunc(ordered, func(left, right sortRow) int {
-			order := bytes.Compare(left.name, right.name)
+		slices.SortStableFunc(ordered, func(leftIndex, rightIndex int) int {
+			left, right := &a.browserEntries[leftIndex], &a.browserEntries[rightIndex]
+			order := bytes.Compare(left.order, right.order)
 			if order == 0 {
 				order = strings.Compare(left.path, right.path)
 			}
@@ -78,16 +96,14 @@ func (a *appState) rebuild() {
 			}
 			return order
 		})
-		for i, row := range ordered {
-			a.rows[i] = row.face
-		}
 	}
 	a.selectedRow = -1
-	for i := range a.rows {
-		if a.rows[i].ID() == a.selectedID {
-			a.selectedRow = i
-			break
+	for _, index := range ordered {
+		entry := &a.browserEntries[index]
+		if a.selectedID != "" && entry.id == a.selectedID {
+			a.selectedRow = len(a.rows)
 		}
+		a.rows = append(a.rows, entry.face)
 	}
 	if a.selectedRow < 0 {
 		a.selectedID = ""

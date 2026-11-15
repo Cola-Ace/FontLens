@@ -48,6 +48,7 @@ type appState struct {
 	tableSort         ui.SortOrder
 	sortSeen          ui.SortOrder
 	faces             []fonts.Entry
+	browserEntries    []browserEntry
 	faceIndex         map[string]int
 	systemIDs         map[string]bool
 	scopeCounts       map[string]map[string]struct{}
