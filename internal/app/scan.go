@@ -67,6 +67,7 @@ func (a *appState) refresh() {
 		batch := make([]scanFace, 0, 512)
 		var directories, messages []string
 		lastFlush := time.Now()
+		var lastRebuild time.Time
 		flush := func() {
 			if len(batch)+len(directories)+len(messages) == 0 || ctx.Err() != nil {
 				return
@@ -101,8 +102,9 @@ func (a *appState) refresh() {
 					}
 				}
 				a.errors = append(a.errors, errors...)
-				if len(ready) > 0 {
+				if len(ready) > 0 && time.Since(lastRebuild) >= 250*time.Millisecond {
 					a.rebuild()
+					lastRebuild = time.Now()
 				}
 			})
 			// Keep at most one scan update queued so cached reads cannot flood the UI thread.
