@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"fontlens/internal/coverage"
 	"fontlens/internal/fonts"
@@ -15,6 +16,8 @@ import (
 )
 
 const version = 10
+
+var gzipReaders sync.Pool
 
 type Store struct{ db *sql.DB }
 
@@ -108,11 +111,20 @@ func encode(value any) ([]byte, error) {
 }
 
 func decode(payload []byte, value any) error {
-	zip, err := gzip.NewReader(bytes.NewReader(payload))
+	zip, _ := gzipReaders.Get().(*gzip.Reader)
+	var err error
+	if zip == nil {
+		zip, err = gzip.NewReader(bytes.NewReader(payload))
+	} else {
+		err = zip.Reset(bytes.NewReader(payload))
+	}
 	if err != nil {
 		return err
 	}
-	defer zip.Close()
+	defer func() {
+		zip.Close()
+		gzipReaders.Put(zip)
+	}()
 	if err := gob.NewDecoder(zip).Decode(value); err != nil {
 		return fmt.Errorf("cache decode: %w", err)
 	}

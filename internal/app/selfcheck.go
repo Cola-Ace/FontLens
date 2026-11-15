@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"unicode"
 
 	"fontlens/internal/codepoints"
@@ -405,6 +406,29 @@ func checkStore(path string, faces []fonts.Face) error {
 	cached, found := cache.Coverage(key)
 	if !found || cached.Codepoints != result.Codepoints || len(cached.Blocks) != len(result.Blocks) {
 		return fmt.Errorf("coverage cache mismatch")
+	}
+	var readers sync.WaitGroup
+	failures := make(chan error, 8)
+	for range 8 {
+		readers.Go(func() {
+			for range 32 {
+				loaded, ok := cache.Faces(path, face.Size, face.Modified)
+				if !ok || !slices.Equal(loaded, entries) {
+					failures <- fmt.Errorf("concurrent font cache mismatch")
+					return
+				}
+				loadedCoverage, ok := cache.Coverage(key)
+				if !ok || loadedCoverage.Codepoints != result.Codepoints || len(loadedCoverage.Blocks) != len(result.Blocks) {
+					failures <- fmt.Errorf("concurrent coverage cache mismatch")
+					return
+				}
+			}
+		})
+	}
+	readers.Wait()
+	close(failures)
+	for err := range failures {
+		return err
 	}
 	return nil
 }
