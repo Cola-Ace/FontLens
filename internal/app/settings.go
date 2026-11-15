@@ -11,6 +11,7 @@ import (
 
 type settings struct {
 	Sources           []string              `json:"sources"`
+	SourceNames       map[string]string     `json:"sourceNames,omitempty"`
 	Scope             string                `json:"scope"`
 	Open              []string              `json:"open"`
 	Charsets          []coverage.Definition `json:"charsets"`
@@ -40,6 +41,7 @@ func (a *appState) loadSettings() {
 	var saved settings
 	if json.Unmarshal(data, &saved) == nil {
 		a.sources = saved.Sources
+		a.sourceNames = saved.SourceNames
 		if saved.Scope != "" {
 			a.scope = saved.Scope
 		}
@@ -97,7 +99,7 @@ func (a *appState) saveSettings() {
 	}
 	slices.Sort(open)
 	data, err := json.MarshalIndent(settings{
-		Sources: a.sources, Scope: a.scope, Open: open, Charsets: a.charsets,
+		Sources: a.sources, SourceNames: a.sourceNames, Scope: a.scope, Open: open, Charsets: a.charsets,
 		CharsetRevision: a.charsetRevision, ThemeMode: a.themeMode,
 		LeftWidth: a.leftWidth, CenterWidth: a.centerWidth,
 		CoverageSplit: a.coverageSplit,

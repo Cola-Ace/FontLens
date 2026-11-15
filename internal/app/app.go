@@ -34,6 +34,10 @@ type appState struct {
 	leftWidth         float32
 	centerWidth       float32
 	sources           []string
+	sourceNames       map[string]string
+	renameOpen        bool
+	renameSource      string
+	renameName        string
 	charsets          []coverage.Definition
 	charsetRevision   int64
 	charsetMessage    string
@@ -125,4 +129,5 @@ func (a *appState) view(c *ui.Context) {
 	}).Fill().Changed() {
 		a.leftWidth = leftWidth
 	}
+	a.renameFolderDialog(c)
 }
