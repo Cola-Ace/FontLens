@@ -3,12 +3,14 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -50,6 +52,13 @@ func selfCheck(fontPath, sample string) error {
 		return fmt.Errorf("Unicode version: %s", unicode.Version)
 	}
 	result := coverage.Analyze(nil)
+	contextResult, err := coverage.AnalyzeWithContext(context.Background(), nil, []coverage.Definition{imported})
+	if err != nil || !reflect.DeepEqual(contextResult, coverage.AnalyzeWith(nil, []coverage.Definition{imported})) {
+		return fmt.Errorf("context coverage result mismatch: %v", err)
+	}
+	if _, err := coverage.AnalyzeWithContext(&cancelCheckContext{Context: context.Background(), checks: 3}, nil, nil); !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("in-progress coverage cancellation: %v", err)
+	}
 	expectedTotals := []int{6763, 20923, 27584, 27780, 97908, 8105, 3500, 3000, 1605, 13706, 5033, 6879, 11209, 8224, 11172}
 	if len(result.Charsets) != len(expectedTotals) {
 		return fmt.Errorf("builtin charset count mismatch")
@@ -114,6 +123,19 @@ func selfCheck(fontPath, sample string) error {
 		}
 	}
 	return fmt.Errorf("no readable system font")
+}
+
+type cancelCheckContext struct {
+	context.Context
+	checks int
+}
+
+func (c *cancelCheckContext) Err() error {
+	if c.checks == 0 {
+		return context.Canceled
+	}
+	c.checks--
+	return nil
 }
 
 func checkScopeCounts() error {
@@ -223,6 +245,18 @@ func checkFont(path, sample string) error {
 	}
 	if len(faces) == 0 || faces[0].FullName == "" {
 		return fmt.Errorf("font has no readable face")
+	}
+	selected, err := fonts.ReadFaceContext(context.Background(), path, 0)
+	if err != nil || !reflect.DeepEqual(selected, faces[0]) {
+		return fmt.Errorf("context font read mismatch: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := fonts.ReadFaceContext(ctx, path, 0); !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("cancelled font read: %v", err)
+	}
+	if _, err := fonts.ReadFaceContext(&cancelCheckContext{Context: context.Background(), checks: 3}, path, 0); err == nil {
+		return fmt.Errorf("in-progress font cancellation failed")
 	}
 	if len(faces[0].Properties) == 0 {
 		return fmt.Errorf("font metadata is empty")

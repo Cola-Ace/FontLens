@@ -63,6 +63,7 @@ func Run() {
 		log.Fatal(err)
 	}
 	app.saveSettings()
+	app.releaseDetails()
 	if app.store != nil {
 		app.store.Close()
 	}

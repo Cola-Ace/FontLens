@@ -28,6 +28,8 @@ type appState struct {
 	detailFace        *fonts.Face
 	detailKey         string
 	detailGeneration  int
+	cancelDetails     context.CancelFunc
+	cancelCoverage    context.CancelFunc
 	detailError       string
 	detailLoading     *loadingHint
 	detailPending     *detailResult

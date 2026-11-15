@@ -90,11 +90,11 @@ func DecodeWebFont(path string) ([]byte, error) {
 }
 
 func Read(path string) ([]Face, error) {
-	return read(path, -1, false)
+	return read(context.Background(), path, -1, false)
 }
 
 func ReadIndex(path string) ([]Entry, error) {
-	faces, err := read(path, -1, true)
+	faces, err := read(context.Background(), path, -1, true)
 	if err != nil {
 		return nil, err
 	}
@@ -106,17 +106,43 @@ func ReadIndex(path string) ([]Entry, error) {
 }
 
 func ReadFace(path string, index int) (Face, error) {
+	return ReadFaceContext(context.Background(), path, index)
+}
+
+func ReadFaceContext(ctx context.Context, path string, index int) (Face, error) {
 	if index < 0 {
 		return Face{}, fmt.Errorf("face index %d is out of range", index)
 	}
-	faces, err := read(path, index, false)
+	faces, err := read(ctx, path, index, false)
 	if err != nil {
 		return Face{}, err
 	}
 	return faces[0], nil
 }
 
-func read(path string, selected int, indexOnly bool) ([]Face, error) {
+type contextReader struct {
+	opentype.Resource
+	ctx context.Context
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.Resource.Read(p)
+}
+
+func (r contextReader) ReadAt(p []byte, offset int64) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.Resource.ReadAt(p, offset)
+}
+
+func read(ctx context.Context, path string, selected int, indexOnly bool) ([]Face, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -127,19 +153,19 @@ func read(path string, selected int, indexOnly bool) ([]Face, error) {
 		return nil, err
 	}
 	var loaders []*opentype.Loader
-	var directorySource io.ReaderAt = file
+	var directorySource opentype.Resource = contextReader{Resource: file, ctx: ctx}
 	directorySize := info.Size()
 	if strings.EqualFold(filepath.Ext(path), ".woff2") || strings.EqualFold(filepath.Ext(path), ".woff") {
 		sfnt, decodeErr := DecodeWebFont(path)
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
-		reader := bytes.NewReader(sfnt)
+		reader := contextReader{Resource: bytes.NewReader(sfnt), ctx: ctx}
 		directorySource = reader
 		directorySize = int64(len(sfnt))
 		loaders, err = opentype.NewLoaders(reader)
 	} else {
-		loaders, err = opentype.NewLoaders(file)
+		loaders, err = opentype.NewLoaders(directorySource)
 	}
 	if err != nil {
 		return nil, err
@@ -153,6 +179,9 @@ func read(path string, selected int, indexOnly bool) ([]Face, error) {
 	}
 	result := make([]Face, 0, capacity)
 	for index, loader := range loaders {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if selected >= 0 && index != selected {
 			continue
 		}
@@ -204,7 +233,7 @@ func read(path string, selected int, indexOnly bool) ([]Face, error) {
 		}
 		result = append(result, face)
 	}
-	return result, nil
+	return result, ctx.Err()
 }
 
 func readTableDirectory(source io.ReaderAt, faceIndex int) (map[string]Table, error) {

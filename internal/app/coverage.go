@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"slices"
@@ -11,6 +12,8 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
+
+var coverageSlots = make(chan struct{}, 1)
 
 func coverageKey(face fonts.Entry) string {
 	return fmt.Sprintf("%s:%d:%d", face.ID(), face.Size, face.Modified)
@@ -32,17 +35,34 @@ func (a *appState) cachedCoverage(face fonts.Entry) (coverage.Result, bool) {
 	return coverage.Result{}, false
 }
 
-func (a *appState) readCoverage(face fonts.Face, key string, imported []coverage.Definition) coverage.Result {
+func (a *appState) readCoverage(ctx context.Context, face fonts.Face, key string, imported []coverage.Definition) (coverage.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return coverage.Result{}, err
+	}
 	if a.store != nil {
 		if result, found := a.store.Coverage(key); found {
-			return result
+			return result, ctx.Err()
 		}
 	}
-	result := coverage.AnalyzeWith(face.Characters, imported)
+	result, err := coverage.AnalyzeWithContext(ctx, face.Characters, imported)
+	if err != nil {
+		return coverage.Result{}, err
+	}
 	if a.store != nil {
 		_ = a.store.SaveCoverage(key, result)
 	}
-	return result
+	return result, ctx.Err()
+}
+
+func (a *appState) stopCoverage() {
+	if a.cancelCoverage != nil {
+		a.cancelCoverage()
+		a.cancelCoverage = nil
+	}
+	for _, hint := range a.coverageLoading {
+		hint.finish()
+	}
+	a.coverageLoading = nil
 }
 
 func (a *appState) ensureCoverage(face fonts.Face) {
@@ -57,16 +77,27 @@ func (a *appState) ensureCoverage(face fonts.Face) {
 	if _, exists := a.coverageCache[key]; exists || a.coverageLoading[key] != nil {
 		return
 	}
+	a.stopCoverage()
+	a.coverageLoading = make(map[string]*loadingHint)
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cancelCoverage = cancel
 	hint := newLoadingHint(a.window)
 	a.coverageLoading[key] = hint
 	imported := slices.Clone(a.charsets)
 	generation := a.detailGeneration
 	entry := face.Entry
 	go func() {
-		result := a.readCoverage(face, key, imported)
+		select {
+		case coverageSlots <- struct{}{}:
+			defer func() { <-coverageSlots }()
+		case <-ctx.Done():
+			return
+		}
+		result, err := a.readCoverage(ctx, face, key, imported)
 		a.window.Update(func() {
+			defer cancel()
 			hint.finish()
-			if generation != a.detailGeneration || key != a.coverageCacheKey(entry) {
+			if ctx.Err() != nil || err != nil || generation != a.detailGeneration || key != a.coverageCacheKey(entry) {
 				return
 			}
 			a.coverageCache = map[string]coverage.Result{key: result}
