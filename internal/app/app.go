@@ -74,6 +74,7 @@ type appState struct {
 	previewSize       float32
 	previewLineHeight float32
 	previewBitmaps    map[string]*ui.Bitmap
+	previewHistory    bitmapHistory
 	previewLast       map[string]*ui.Bitmap
 	previewLoading    map[string]*previewRequest
 	previewWanted     map[string]bool

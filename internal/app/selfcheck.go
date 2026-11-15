@@ -22,6 +22,7 @@ import (
 	"fontlens/internal/fonts"
 	"fontlens/internal/preview"
 	"fontlens/internal/store"
+	"github.com/egoist/mygo/ui"
 )
 
 func selfCheck(fontPath, sample string) error {
@@ -35,6 +36,9 @@ func selfCheck(fontPath, sample string) error {
 		return err
 	}
 	if err := checkBrowserMetadata(); err != nil {
+		return err
+	}
+	if err := checkPreviewCache(); err != nil {
 		return err
 	}
 	for _, preset := range preview.Presets {
@@ -235,6 +239,43 @@ func checkBrowserMetadata() error {
 	app.rebuild()
 	if len(app.rows) != 1 || app.rows[0].FullName != "Font 2" || app.selectedID != "" || len(app.browserEntries) != 1 {
 		return fmt.Errorf("removed browser metadata or selection mismatch")
+	}
+	return nil
+}
+
+func checkPreviewCache() error {
+	app := appState{}
+	for _, key := range []string{"old", "recent", "new"} {
+		app.cachePreview(key, ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 2, 2))))
+	}
+	app.touchPreview("old")
+	app.trimPreviews(nil, 32)
+	if app.previewBitmaps["recent"] != nil || app.previewBitmaps["old"] == nil || app.previewBitmaps["new"] == nil || app.previewHistory.bytes != 32 {
+		return fmt.Errorf("preview cache LRU eviction mismatch")
+	}
+	app.previewLast = map[string]*ui.Bitmap{"fallback": app.previewBitmaps["new"]}
+	app.trimPreviews(map[string]bool{"old": true}, 0)
+	if len(app.previewBitmaps) != 2 || app.previewHistory.bytes != 32 {
+		return fmt.Errorf("preview cache evicted displayed or fallback bitmap")
+	}
+	app.cachePreview("old", ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 1, 1))))
+	if app.previewHistory.bytes != 20 || app.previewHistory.order.Len() != 2 {
+		return fmt.Errorf("preview cache replacement accounting mismatch")
+	}
+	app.previewLast = nil
+	app.trimPreviews(nil, 0)
+	if len(app.previewBitmaps) != 0 || app.previewHistory.bytes != 0 || app.previewHistory.order.Len() != 0 || len(app.previewHistory.recent) != 0 {
+		return fmt.Errorf("preview cache retained unpinned bitmaps")
+	}
+	app.previewLoading = make(map[string]*previewRequest)
+	entry := fonts.Entry{Path: "cached-preview.ttf"}
+	ink := color.RGBA{A: 255}
+	key := app.previewKey(entry, "sample", 28, 260, 52, 1, ink)
+	bitmap := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 2, 2)))
+	app.cachePreview(key, bitmap)
+	app.cancelPreviews(nil)
+	if app.previewBitmaps[key] != bitmap || app.ensurePreview(entry, "sample", 28, 260, 52, 1, ink) != key || len(app.previewLoading) != 0 {
+		return fmt.Errorf("recent preview was rendered again after leaving the viewport")
 	}
 	return nil
 }

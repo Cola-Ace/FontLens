@@ -1,6 +1,7 @@
 package app
 
 import (
+	"container/list"
 	"context"
 	"fmt"
 	"image/color"
@@ -17,6 +18,65 @@ import (
 type previewRequest struct {
 	cancel context.CancelFunc
 	hint   *loadingHint
+}
+
+const previewCacheBudget int64 = 32 << 20
+
+type bitmapHistory struct {
+	recent map[string]*list.Element
+	order  list.List
+	bytes  int64
+}
+
+type cachedBitmap struct {
+	key   string
+	bytes int64
+}
+
+func (a *appState) cachePreview(key string, bitmap *ui.Bitmap) {
+	if a.previewHistory.recent == nil {
+		a.previewHistory.recent = make(map[string]*list.Element)
+	}
+	if a.previewBitmaps == nil {
+		a.previewBitmaps = make(map[string]*ui.Bitmap)
+	}
+	if previous := a.previewHistory.recent[key]; previous != nil {
+		a.previewHistory.bytes -= previous.Value.(cachedBitmap).bytes
+		a.previewHistory.order.Remove(previous)
+	}
+	w, h := bitmap.Size()
+	entry := cachedBitmap{key: key, bytes: int64(w) * int64(h) * 4}
+	a.previewHistory.recent[key] = a.previewHistory.order.PushFront(entry)
+	a.previewHistory.bytes += entry.bytes
+	a.previewBitmaps[key] = bitmap
+}
+
+func (a *appState) touchPreview(key string) {
+	if entry := a.previewHistory.recent[key]; entry != nil {
+		a.previewHistory.order.MoveToFront(entry)
+	}
+}
+
+func (a *appState) trimPreviews(wanted map[string]bool, budget int64) {
+	if a.previewHistory.bytes <= budget {
+		return
+	}
+	pinned := make(map[*ui.Bitmap]bool, len(a.previewLast))
+	for _, bitmap := range a.previewLast {
+		pinned[bitmap] = true
+	}
+	// The budget counts base RGBA pixels; displayed and fallback previews stay pinned.
+	for item := a.previewHistory.order.Back(); item != nil && a.previewHistory.bytes > budget; {
+		previous := item.Prev()
+		entry := item.Value.(cachedBitmap)
+		if !wanted[entry.key] && !pinned[a.previewBitmaps[entry.key]] {
+			delete(a.previewBitmaps, entry.key)
+			delete(a.previewHistory.recent, entry.key)
+			a.previewHistory.bytes -= entry.bytes
+			a.previewHistory.order.Remove(item)
+		}
+		item = previous
+	}
 }
 
 func (a *appState) compareView(c *ui.Context) {
@@ -126,6 +186,7 @@ func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, 
 	}
 	key := a.previewKey(face, sample, size, width, height, scale, ink)
 	if a.previewBitmaps[key] != nil || a.previewLoading[key] != nil || a.previewErrors[key] != "" {
+		a.touchPreview(key)
 		return key
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -156,18 +217,13 @@ func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, 
 				a.previewErrors[key] = err.Error()
 				return
 			}
-			a.previewBitmaps[key] = ui.NewBitmap(bitmap)
+			a.cachePreview(key, ui.NewBitmap(bitmap))
 		})
 	}()
 	return key
 }
 
 func (a *appState) cancelPreviews(wanted map[string]bool) {
-	for key := range a.previewBitmaps {
-		if !wanted[key] {
-			delete(a.previewBitmaps, key)
-		}
-	}
 	for slot := range a.previewLast {
 		if !a.previewSlots[slot] {
 			delete(a.previewLast, slot)
@@ -185,6 +241,7 @@ func (a *appState) cancelPreviews(wanted map[string]bool) {
 			delete(a.previewErrors, key)
 		}
 	}
+	a.trimPreviews(wanted, previewCacheBudget)
 }
 
 func (a *appState) syncPreviews(c *ui.Context, faces []fonts.Entry, sample string, size float32, width, height int) {
@@ -230,9 +287,12 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
 	key := a.previewKey(face, sample, size, width, height, scale, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
 	slot := previewSlot(face, width, height, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
+	a.previewWanted[key] = true
+	a.previewSlots[slot] = true
 	request := a.previewLoading[key]
 	loading := request != nil && request.hint.show()
 	if bitmap := a.previewBitmaps[key]; bitmap != nil {
+		a.touchPreview(key)
 		if a.previewSlots[slot] {
 			a.previewLast[slot] = bitmap
 		}
