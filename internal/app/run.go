@@ -56,12 +56,12 @@ func Run() {
 		app.window = mygo.NewWindow(mygo.WindowOptions{
 			Title: "FontLens", Width: width, Height: height,
 			MinWidth: min(1024, width), MinHeight: min(720, height),
-			Hidden:  true,
-			Content: ui.View(app.view),
+			Hidden: true,
+			// Retain the hidden first frame through DirectComposition instead of GDI.
+			Transparent: true,
+			Content:     ui.View(app.view),
 		})
-		// Show before the queued hidden frame: GDI cannot retain its pixels while hidden.
-		// MyGo keeps the window cloaked until the first visible paint completes.
-		app.window.Show()
+		app.window.OnReadyToShow(func() { showStartupWindow(app.window) })
 		app.refresh()
 	})
 	if err := mygo.App.Run(); err != nil {
