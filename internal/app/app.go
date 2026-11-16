@@ -97,18 +97,13 @@ type appState struct {
 }
 
 func (a *appState) view(c *ui.Context) {
+	animateTheme(c)
 	a.previewWanted = make(map[string]bool)
 	// Keep displayed previews available when returning from pages without previews.
 	if !a.rawViewOpen && !a.coveragePage {
 		a.previewSlots = make(map[string]bool)
 	}
 	defer a.cancelPreviews(a.previewWanted)
-	switch a.themeMode {
-	case 1:
-		c.SetTheme(ui.LightTheme())
-	case 2:
-		c.SetTheme(ui.DarkTheme())
-	}
 	if a.comparePage {
 		a.compareView(c)
 		return

@@ -100,7 +100,7 @@ func (a *appState) ensureCoverage(face fonts.Face) {
 			if ctx.Err() != nil || err != nil || generation != a.detailGeneration || key != a.coverageCacheKey(entry) {
 				return
 			}
-			a.coverageCache = map[string]coverage.Result{key: result}
+			a.coverageCache[key] = result
 			delete(a.coverageLoading, key)
 		})
 	}()
@@ -112,9 +112,12 @@ func (a *appState) coverageView(c *ui.Context) {
 		return
 	}
 	face := a.ensureDetails(a.rows[a.selectedRow])
-	if a.detailPending != nil {
-		a.commitDetails()
-		face = a.detailFace
+	if pending := a.detailPending; pending != nil {
+		a.ensureCoverage(pending.face)
+		if _, ready := a.coverageCache[a.coverageCacheKey(pending.face.Entry)]; ready || !pending.face.HasUnicodeCmap() {
+			a.commitDetails()
+			face = a.detailFace
+		}
 	}
 	if face == nil {
 		a.coveragePage = false

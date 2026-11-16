@@ -41,6 +41,7 @@ func Run() {
 	app.tree.Open.Add("all")
 	app.tree.Open.Add("custom")
 	app.loadSettings()
+	app.applyTheme()
 	if path := settingsPath(); path != "" {
 		var err error
 		app.store, err = store.Open(filepath.Join(filepath.Dir(path), "index.db"))
@@ -55,8 +56,12 @@ func Run() {
 		app.window = mygo.NewWindow(mygo.WindowOptions{
 			Title: "FontLens", Width: width, Height: height,
 			MinWidth: min(1024, width), MinHeight: min(720, height),
-			Content: ui.View(app.view),
+			Hidden: true,
+			// Retain the hidden first frame through DirectComposition instead of GDI.
+			Transparent: true,
+			Content:     ui.View(app.view),
 		})
+		app.window.OnReadyToShow(func() { showStartupWindow(app.window) })
 		app.refresh()
 	})
 	if err := mygo.App.Run(); err != nil {
