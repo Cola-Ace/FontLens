@@ -9,7 +9,7 @@ import (
 func animateTheme(c *ui.Context) {
 	theme := *c.Theme()
 	root := c.Root()
-	animation := ui.Animation{Duration: 200 * time.Millisecond, Ease: ui.EaseInOut, Oklab: true}
+	animation := ui.Animation{Duration: 250 * time.Millisecond, Ease: ui.EaseInOut, Oklab: true}
 	for _, token := range []struct {
 		key   string
 		color *ui.Color
