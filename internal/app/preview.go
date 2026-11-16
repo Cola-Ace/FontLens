@@ -163,8 +163,8 @@ func (a *appState) selectPreviewPreset(label string) {
 	}
 }
 
-func (a *appState) previewKey(face fonts.Entry, sample string, size float32, width, height int, scale float32, ink color.RGBA) string {
-	key := fmt.Sprintf("%s:%g:%g:%d:%d:%g:%d:%d:%d:%s", coverageKey(face), size, a.previewLineHeight, width, height, scale, ink.R, ink.G, ink.B, sample)
+func (a *appState) previewKey(face fonts.Entry, sample string, size float32, width, height int, scale float32) string {
+	key := fmt.Sprintf("%s:%g:%g:%d:%d:%g:%s", coverageKey(face), size, a.previewLineHeight, width, height, scale, sample)
 	axes := a.axisValues[face.ID()]
 	tags := make([]string, 0, len(axes))
 	for tag := range axes {
@@ -177,14 +177,14 @@ func (a *appState) previewKey(face fonts.Entry, sample string, size float32, wid
 	return key
 }
 
-func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, width, height int, scale float32, ink color.RGBA) string {
+func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, width, height int, scale float32) string {
 	if a.previewLoading == nil {
 		a.previewBitmaps = make(map[string]*ui.Bitmap)
 		a.previewLast = make(map[string]*ui.Bitmap)
 		a.previewLoading = make(map[string]*previewRequest)
 		a.previewErrors = make(map[string]string)
 	}
-	key := a.previewKey(face, sample, size, width, height, scale, ink)
+	key := a.previewKey(face, sample, size, width, height, scale)
 	if a.previewBitmaps[key] != nil || a.previewLoading[key] != nil || a.previewErrors[key] != "" {
 		a.touchPreview(key)
 		return key
@@ -198,7 +198,8 @@ func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, 
 		axes[tag] = float32(value)
 	}
 	go func() {
-		bitmap, err := preview.Render(ctx, face.Path, face.Index, axes, sample, size, lineHeight, width, height, scale, ink)
+		// Cache white glyphs and tint them when drawing so theme animation reuses the bitmap.
+		bitmap, err := preview.Render(ctx, face.Path, face.Index, axes, sample, size, lineHeight, width, height, scale, color.RGBA{R: 255, G: 255, B: 255, A: 255})
 		if ctx.Err() != nil {
 			cancel()
 			return
@@ -258,12 +259,10 @@ func (a *appState) syncPreviews(c *ui.Context, faces []fonts.Entry, sample strin
 }
 
 func (a *appState) syncPreview(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) string {
-	textColor := c.Theme().Text
-	ink := color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255}
 	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
-	key := a.ensurePreview(face, sample, size, width, height, scale, ink)
+	key := a.ensurePreview(face, sample, size, width, height, scale)
 	a.previewWanted[key] = true
-	a.previewSlots[previewSlot(face, width, height, ink)] = true
+	a.previewSlots[previewSlot(face, width, height)] = true
 	return key
 }
 
@@ -271,7 +270,7 @@ func (a *appState) previewView(c *ui.Context, face fonts.Entry, size float32, wi
 	a.previewTextView(c, face, a.previewText, size, width, height)
 }
 
-func previewSlot(face fonts.Entry, width, height int, ink color.RGBA) string {
+func previewSlot(face fonts.Entry, width, height int) string {
 	view, id := "list", face.ID()
 	if width > 0 {
 		view = "compare"
@@ -279,14 +278,13 @@ func previewSlot(face fonts.Entry, width, height int, ink color.RGBA) string {
 			view = "details"
 		}
 	}
-	return fmt.Sprintf("%s:%s:%d:%d:%d", view, id, ink.R, ink.G, ink.B)
+	return fmt.Sprintf("%s:%s", view, id)
 }
 
 func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) ui.Element {
-	textColor := c.Theme().Text
 	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
-	key := a.previewKey(face, sample, size, width, height, scale, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
-	slot := previewSlot(face, width, height, color.RGBA{R: textColor.R, G: textColor.G, B: textColor.B, A: 255})
+	key := a.previewKey(face, sample, size, width, height, scale)
+	slot := previewSlot(face, width, height)
 	a.previewWanted[key] = true
 	a.previewSlots[slot] = true
 	request := a.previewLoading[key]
@@ -306,7 +304,7 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 			_, displayHeight = ui.ImageSize(bitmap)
 			displayHeight /= scale
 		}
-		image := ui.Image(c, bitmap).Size(displayWidth, displayHeight).Fit(ui.Contain)
+		image := previewImage(c, bitmap, displayWidth, displayHeight)
 		if width == 0 {
 			image.Shrink(0)
 		}
@@ -329,7 +327,7 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 			box.Shrink(0)
 		}
 		return box.Children(func() {
-			ui.Image(c, bitmap).Size(displayWidth, displayHeight).Fit(ui.Contain)
+			previewImage(c, bitmap, displayWidth, displayHeight)
 			if loading {
 				ui.Text(c, "更新中…").Absolute().Right(4).Bottom(2).FontSize(12).TextColor(c.Theme().TextMuted)
 			}
@@ -349,4 +347,13 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 			}
 		})
 	}
+}
+
+func previewImage(c *ui.Context, bitmap *ui.Bitmap, width, height float32) ui.Element {
+	return ui.Box(c).Size(width, height).Draw(func(p *ui.Painter, r ui.Rect) {
+		w, h := ui.ImageSize(bitmap)
+		scale := min(r.W/w, r.H/h)
+		dst := ui.Rect{X: r.X + (r.W-w*scale)/2, Y: r.Y + (r.H-h*scale)/2, W: w * scale, H: h * scale}
+		p.ImageRegion(bitmap, ui.Rect{}, dst, ui.ImageOptions{Tint: p.Theme().Text})
+	})
 }

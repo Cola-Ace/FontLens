@@ -97,6 +97,7 @@ type appState struct {
 }
 
 func (a *appState) view(c *ui.Context) {
+	animateTheme(c)
 	a.previewWanted = make(map[string]bool)
 	// Keep displayed previews available when returning from pages without previews.
 	if !a.rawViewOpen && !a.coveragePage {

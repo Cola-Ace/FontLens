@@ -269,12 +269,11 @@ func checkPreviewCache() error {
 	}
 	app.previewLoading = make(map[string]*previewRequest)
 	entry := fonts.Entry{Path: "cached-preview.ttf"}
-	ink := color.RGBA{A: 255}
-	key := app.previewKey(entry, "sample", 28, 260, 52, 1, ink)
+	key := app.previewKey(entry, "sample", 28, 260, 52, 1)
 	bitmap := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 2, 2)))
 	app.cachePreview(key, bitmap)
 	app.cancelPreviews(nil)
-	if app.previewBitmaps[key] != bitmap || app.ensurePreview(entry, "sample", 28, 260, 52, 1, ink) != key || len(app.previewLoading) != 0 {
+	if app.previewBitmaps[key] != bitmap || app.ensurePreview(entry, "sample", 28, 260, 52, 1) != key || len(app.previewLoading) != 0 {
 		return fmt.Errorf("recent preview was rendered again after leaving the viewport")
 	}
 	return nil
