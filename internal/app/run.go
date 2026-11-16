@@ -41,6 +41,7 @@ func Run() {
 	app.tree.Open.Add("all")
 	app.tree.Open.Add("custom")
 	app.loadSettings()
+	app.applyTheme()
 	if path := settingsPath(); path != "" {
 		var err error
 		app.store, err = store.Open(filepath.Join(filepath.Dir(path), "index.db"))
@@ -55,8 +56,12 @@ func Run() {
 		app.window = mygo.NewWindow(mygo.WindowOptions{
 			Title: "FontLens", Width: width, Height: height,
 			MinWidth: min(1024, width), MinHeight: min(720, height),
+			Hidden:  true,
 			Content: ui.View(app.view),
 		})
+		// Show before the queued hidden frame: GDI cannot retain its pixels while hidden.
+		// MyGo keeps the window cloaked until the first visible paint completes.
+		app.window.Show()
 		app.refresh()
 	})
 	if err := mygo.App.Run(); err != nil {

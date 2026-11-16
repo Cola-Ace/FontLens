@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"fontlens/internal/coverage"
+	"github.com/egoist/mygo"
 )
 
 type settings struct {
@@ -31,6 +32,17 @@ func settingsPath() string {
 		return ""
 	}
 	return filepath.Join(base, "FontLens", "settings.json")
+}
+
+func (a *appState) applyTheme() {
+	source := mygo.ThemeSystem
+	switch a.themeMode {
+	case 1:
+		source = mygo.ThemeLight
+	case 2:
+		source = mygo.ThemeDark
+	}
+	mygo.Theme.SetSource(source)
 }
 
 func (a *appState) loadSettings() {

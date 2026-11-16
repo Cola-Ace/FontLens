@@ -165,6 +165,7 @@ func (a *appState) sidebar(c *ui.Context) {
 		themes := []string{"跟随系统", "浅色", "深色"}
 		if ui.Button(c, "主题："+themes[a.themeMode]).Clicked() {
 			a.themeMode = (a.themeMode + 1) % len(themes)
+			a.applyTheme()
 			a.saveSettings()
 		}
 	})
