@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"fontlens/internal/coverage"
 	"fontlens/internal/fonts"
 	"github.com/egoist/mygo/ui"
 )
@@ -117,7 +118,13 @@ func (a *appState) commitDetails() {
 	for _, hint := range a.coverageLoading {
 		hint.finish()
 	}
-	a.coverageCache, a.coverageLoading = nil, nil
+	key := a.coverageCacheKey(result.face.Entry)
+	if cached, ready := a.coverageCache[key]; ready {
+		a.coverageCache = map[string]coverage.Result{key: cached}
+	} else {
+		a.coverageCache = nil
+	}
+	a.coverageLoading = nil
 }
 
 func (a *appState) details(c *ui.Context) {
@@ -137,9 +144,11 @@ func (a *appState) details(c *ui.Context) {
 		face := a.ensureDetails(a.rows[a.selectedRow])
 		if pending := a.detailPending; pending != nil {
 			a.initAxes(pending.face)
+			a.ensureCoverage(pending.face)
+			_, coverageReady := a.coverageCache[a.coverageCacheKey(pending.face.Entry)]
 			key := a.syncPreview(c, pending.face.Entry, a.previewText, a.previewSize, previewWidth, 0)
-			// Publish the new font's text and preview together, including render errors.
-			if a.previewBitmaps[key] != nil || a.previewErrors[key] != "" {
+			// Publish details, preview and coverage together, including render errors.
+			if (coverageReady || !pending.face.HasUnicodeCmap()) && (a.previewBitmaps[key] != nil || a.previewErrors[key] != "") {
 				a.commitDetails()
 				face = a.detailFace
 			}
