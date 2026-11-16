@@ -283,6 +283,10 @@ func previewSlot(face fonts.Entry, width, height int) string {
 
 func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) ui.Element {
 	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
+	var offsetY float32
+	if width == 0 {
+		offsetY = -size * 0.2
+	}
 	key := a.previewKey(face, sample, size, width, height, scale)
 	slot := previewSlot(face, width, height)
 	a.previewWanted[key] = true
@@ -304,7 +308,7 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 			_, displayHeight = ui.ImageSize(bitmap)
 			displayHeight /= scale
 		}
-		image := previewImage(c, bitmap, displayWidth, displayHeight)
+		image := previewImage(c, bitmap, displayWidth, displayHeight, offsetY)
 		if width == 0 {
 			image.Shrink(0)
 		}
@@ -327,7 +331,7 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 			box.Shrink(0)
 		}
 		return box.Children(func() {
-			previewImage(c, bitmap, displayWidth, displayHeight)
+			previewImage(c, bitmap, displayWidth, displayHeight, offsetY)
 			if loading {
 				ui.Text(c, "更新中…").Absolute().Right(4).Bottom(2).FontSize(12).TextColor(c.Theme().TextMuted)
 			}
@@ -349,11 +353,12 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 	}
 }
 
-func previewImage(c *ui.Context, bitmap *ui.Bitmap, width, height float32) ui.Element {
+func previewImage(c *ui.Context, bitmap *ui.Bitmap, width, height, offsetY float32) ui.Element {
 	return ui.Box(c).Size(width, height).Draw(func(p *ui.Painter, r ui.Rect) {
 		w, h := ui.ImageSize(bitmap)
 		scale := min(r.W/w, r.H/h)
-		dst := ui.Rect{X: r.X + (r.W-w*scale)/2, Y: r.Y + (r.H-h*scale)/2, W: w * scale, H: h * scale}
+		// Keep the list's baseline adjustment in the pixel-snapped drawing path.
+		dst := ui.Rect{X: r.X + (r.W-w*scale)/2, Y: r.Y + (r.H-h*scale)/2 + offsetY, W: w * scale, H: h * scale}
 		p.ImageRegion(bitmap, ui.Rect{}, dst, ui.ImageOptions{Tint: p.Theme().Text})
 	})
 }

@@ -249,7 +249,7 @@ func (a *appState) browser(c *ui.Context, width float32) {
 					} else if face.Family == "" {
 						ui.Text(c, "Family Name 未提供").TextColor(c.Theme().TextMuted).SingleLine()
 					} else {
-						a.previewTextView(c, face, face.Family, a.previewSize, 0, max(44, int(math.Ceil(float64(a.previewSize*1.4))))).Translate(0, -a.previewSize*0.2)
+						a.previewTextView(c, face, face.Family, a.previewSize, 0, max(44, int(math.Ceil(float64(a.previewSize*1.4)))))
 					}
 				})
 				if cell.RowDoubleClicked() {
