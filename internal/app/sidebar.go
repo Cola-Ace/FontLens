@@ -94,10 +94,14 @@ func (a *appState) sidebar(c *ui.Context) {
 							p.StrokePath(&folder, 1.25, ink)
 						}
 						if isSource {
+							mark := c.Theme().AccentText
+							if node == a.scope {
+								mark = c.Theme().Accent
+							}
 							var home ui.Path
 							home.MoveTo(x+4, y+6).LineTo(x+6.5, y+4).LineTo(x+9, y+6)
 							home.MoveTo(x+4.5, y+6).LineTo(x+4.5, y+8.5).LineTo(x+8.5, y+8.5).LineTo(x+8.5, y+6)
-							p.StrokePath(&home, 1, c.Theme().Surface)
+							p.StrokePath(&home, 1, mark)
 						} else if a.tree.Open.Has(node) && len(a.treeChildren(node)) > 0 {
 							var flap ui.Path
 							flap.MoveTo(x+1, y+4).LineTo(x+12, y+4)
