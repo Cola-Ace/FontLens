@@ -30,7 +30,7 @@
 ./scripts/build.ps1
 ```
 
-首次构建需要下载 Go 依赖。脚本设置 `CGO_ENABLED=0` 和 `GOFLAGS=-mod=readonly`，清理目标输出目录，再使用锁定的 MyGo v0.8.3 构建。产物为 `dist/windows-amd64/FontLens.exe`，图标与应用数据内嵌，分发时只需该 EXE。
+首次构建需要下载 Go 依赖。脚本设置 `CGO_ENABLED=0` 和 `GOFLAGS=-mod=readonly`，清理目标输出目录，再使用锁定的 MyGo v0.10.0 构建。产物为 `dist/windows-amd64/FontLens.exe`，图标与应用数据内嵌，分发时只需该 EXE。
 
 提交前执行静态检查与内置自检：
 
