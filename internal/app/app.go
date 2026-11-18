@@ -71,6 +71,7 @@ type appState struct {
 	previewText       string
 	previewPreset     string
 	customPreviewText string
+	previewOverrides  map[string]string
 	previewSize       float32
 	previewLineHeight float32
 	familyPreviews    bitmapCache

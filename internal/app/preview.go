@@ -139,8 +139,14 @@ func (a *appState) compareView(c *ui.Context) {
 func (a *appState) previewToolbar(c *ui.Context) {
 	ui.Row(c).Gap(8).Children(func() {
 		if ui.TextInput(c, &a.previewText).Placeholder("输入预览文案").Grow(1).Changed() {
-			a.previewPreset = "自定义"
-			a.customPreviewText = a.previewText
+			if a.previewPreset == "自定义" {
+				a.customPreviewText = a.previewText
+			} else {
+				if a.previewOverrides == nil {
+					a.previewOverrides = make(map[string]string)
+				}
+				a.previewOverrides[a.previewPreset] = a.previewText
+			}
 			a.saveSettings()
 		}
 		labels := []string{"自定义"}
@@ -148,6 +154,12 @@ func (a *appState) previewToolbar(c *ui.Context) {
 			labels = append(labels, preset.Label)
 		}
 		if ui.Select(c, &a.previewPreset, labels).Changed() {
+			a.selectPreviewPreset(a.previewPreset)
+			a.saveSettings()
+		}
+		_, edited := a.previewOverrides[a.previewPreset]
+		if ui.Button(c, "恢复默认文案").Disabled(!edited).Clicked() {
+			delete(a.previewOverrides, a.previewPreset)
 			a.selectPreviewPreset(a.previewPreset)
 			a.saveSettings()
 		}
@@ -177,6 +189,9 @@ func (a *appState) selectPreviewPreset(label string) {
 		if preset.Label == label {
 			a.previewPreset = label
 			a.previewText = preset.Text
+			if text, edited := a.previewOverrides[label]; edited {
+				a.previewText = text
+			}
 			break
 		}
 	}
