@@ -244,37 +244,69 @@ func checkBrowserMetadata() error {
 }
 
 func checkPreviewCache() error {
-	app := appState{}
-	for _, key := range []string{"old", "recent", "new"} {
-		app.cachePreview(key, ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 2, 2))))
+	cache := bitmapCache{}
+	old := previewKey{settings: "old"}
+	recent := previewKey{settings: "recent"}
+	newest := previewKey{settings: "new"}
+	for _, key := range []previewKey{old, recent, newest} {
+		cache.put(key, ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 2, 2))))
 	}
-	app.touchPreview("old")
-	app.trimPreviews(nil, 32)
-	if app.previewBitmaps["recent"] != nil || app.previewBitmaps["old"] == nil || app.previewBitmaps["new"] == nil || app.previewHistory.bytes != 32 {
+	cache.touch(old)
+	cache.trim(nil, nil, 32)
+	if cache.bitmap(recent) != nil || cache.bitmap(old) == nil || cache.bitmap(newest) == nil || cache.bytes != 32 {
 		return fmt.Errorf("preview cache LRU eviction mismatch")
 	}
-	app.previewLast = map[string]*ui.Bitmap{"fallback": app.previewBitmaps["new"]}
-	app.trimPreviews(map[string]bool{"old": true}, 0)
-	if len(app.previewBitmaps) != 2 || app.previewHistory.bytes != 32 {
+	cache.trim(map[previewKey]bool{old: true}, map[*ui.Bitmap]bool{cache.bitmap(newest): true}, 0)
+	if len(cache.recent) != 2 || cache.bytes != 32 {
 		return fmt.Errorf("preview cache evicted displayed or fallback bitmap")
 	}
-	app.cachePreview("old", ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 1, 1))))
-	if app.previewHistory.bytes != 20 || app.previewHistory.order.Len() != 2 {
+	cache.put(old, ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 1, 1))))
+	if cache.bytes != 20 || cache.order.Len() != 2 {
 		return fmt.Errorf("preview cache replacement accounting mismatch")
 	}
-	app.previewLast = nil
-	app.trimPreviews(nil, 0)
-	if len(app.previewBitmaps) != 0 || app.previewHistory.bytes != 0 || app.previewHistory.order.Len() != 0 || len(app.previewHistory.recent) != 0 {
+	cache.trim(nil, nil, 0)
+	if cache.bytes != 0 || cache.order.Len() != 0 || len(cache.recent) != 0 {
 		return fmt.Errorf("preview cache retained unpinned bitmaps")
 	}
-	app.previewLoading = make(map[string]*previewRequest)
-	entry := fonts.Entry{Path: "cached-preview.ttf"}
-	key := app.previewKey(entry, "sample", 28, 260, 52, 1)
-	bitmap := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 2, 2)))
-	app.cachePreview(key, bitmap)
+
+	app := appState{previewLoading: make(map[previewKey]*previewRequest)}
+	entry := fonts.Entry{Path: "cached-preview.ttf", Family: "Cached"}
+	key := app.previewKey(entry, entry.Family, 28, 0, 44, 1)
+	sample := app.previewKey(entry, "sample", 28, 260, 52, 1)
+	bitmap := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 256, 44)))
+	app.samplePreviews.put(sample, bitmap)
+	app.familyPreviews.put(key, bitmap)
 	app.cancelPreviews(nil)
-	if app.previewBitmaps[key] != bitmap || app.ensurePreview(entry, "sample", 28, 260, 52, 1) != key || len(app.previewLoading) != 0 {
+	if app.familyPreviews.bitmap(key) != bitmap || app.ensurePreview(entry, entry.Family, 28, 0, 44, 1) != key || len(app.previewLoading) != 0 {
 		return fmt.Errorf("recent preview was rendered again after leaving the viewport")
+	}
+	for index := range 928 {
+		face := fonts.Entry{Path: fmt.Sprintf("font-%d.ttf", index), Family: "Font"}
+		app.familyPreviews.put(app.previewKey(face, face.Family, 28, 0, 44, 1), bitmap)
+		app.cancelPreviews(nil)
+	}
+	if app.familyPreviews.bytes > familyPreviewBudget || app.familyPreviews.bitmap(key) != nil || app.samplePreviews.bitmap(sample) != bitmap {
+		return fmt.Errorf("family preview cache exceeded its own budget")
+	}
+
+	app.familyPreviews.put(key, bitmap)
+	updated := entry
+	updated.Modified++
+	updatedKey := app.previewKey(updated, updated.Family, 28, 0, 44, 1)
+	app.familyPreviews.put(updatedKey, bitmap)
+	app.previewLast = map[previewSlot]*ui.Bitmap{key.slot: bitmap, updatedKey.slot: bitmap, sample.slot: bitmap}
+	pending := app.previewKey(entry, entry.Family, 30, 0, 44, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app.previewLoading[pending] = &previewRequest{cancel: cancel}
+	app.previewErrors = map[previewKey]string{key: "old error"}
+	app.rows = []fonts.Entry{updated}
+	app.pruneFamilyPreviews()
+	if len(app.familyPreviews.recent) != 1 || app.familyPreviews.order.Len() != 1 || app.familyPreviews.bytes != 256*44*4 ||
+		app.familyPreviews.bitmap(updatedKey) != bitmap || app.previewLast[key.slot] != nil || app.previewLast[updatedKey.slot] != bitmap ||
+		app.samplePreviews.bitmap(sample) != bitmap || app.previewLast[sample.slot] != bitmap ||
+		ctx.Err() != context.Canceled || len(app.previewLoading) != 0 || len(app.previewErrors) != 0 {
+		return fmt.Errorf("family preview cache pruning after list change mismatch")
 	}
 	return nil
 }

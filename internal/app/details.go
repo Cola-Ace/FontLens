@@ -148,7 +148,7 @@ func (a *appState) details(c *ui.Context) {
 			_, coverageReady := a.coverageCache[a.coverageCacheKey(pending.face.Entry)]
 			key := a.syncPreview(c, pending.face.Entry, a.previewText, a.previewSize, previewWidth, 0)
 			// Publish details, preview and coverage together, including render errors.
-			if (coverageReady || !pending.face.HasUnicodeCmap()) && (a.previewBitmaps[key] != nil || a.previewErrors[key] != "") {
+			if (coverageReady || !pending.face.HasUnicodeCmap()) && (a.previewCache(key).bitmap(key) != nil || a.previewErrors[key] != "") {
 				a.commitDetails()
 				face = a.detailFace
 			}

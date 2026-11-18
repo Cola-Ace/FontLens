@@ -73,13 +73,13 @@ type appState struct {
 	customPreviewText string
 	previewSize       float32
 	previewLineHeight float32
-	previewBitmaps    map[string]*ui.Bitmap
-	previewHistory    bitmapHistory
-	previewLast       map[string]*ui.Bitmap
-	previewLoading    map[string]*previewRequest
-	previewWanted     map[string]bool
-	previewSlots      map[string]bool
-	previewErrors     map[string]string
+	familyPreviews    bitmapCache
+	samplePreviews    bitmapCache
+	previewLast       map[previewSlot]*ui.Bitmap
+	previewLoading    map[previewKey]*previewRequest
+	previewWanted     map[previewKey]bool
+	previewSlots      map[previewSlot]bool
+	previewErrors     map[previewKey]string
 	compareIDs        []string
 	comparePage       bool
 	compareLimit      bool
@@ -98,10 +98,10 @@ type appState struct {
 
 func (a *appState) view(c *ui.Context) {
 	animateTheme(c)
-	a.previewWanted = make(map[string]bool)
+	a.previewWanted = make(map[previewKey]bool)
 	// Keep displayed previews available when returning from pages without previews.
 	if !a.rawViewOpen && !a.coveragePage {
-		a.previewSlots = make(map[string]bool)
+		a.previewSlots = make(map[previewSlot]bool)
 	}
 	defer a.cancelPreviews(a.previewWanted)
 	if a.comparePage {

@@ -232,6 +232,7 @@ func (a *appState) refresh() {
 				a.scanning = false
 				a.cancelScan = nil
 				a.rebuild()
+				a.pruneFamilyPreviews()
 			}
 		})
 	}()

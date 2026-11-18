@@ -144,6 +144,7 @@ func (a *appState) sidebar(c *ui.Context) {
 		}).Grow(1).Changed() {
 			a.scope = a.tree.Item(a.treeRow)
 			a.rebuild()
+			a.pruneFamilyPreviews()
 			a.table.ScrollTo(0, ui.Start)
 			a.saveSettings()
 		}
@@ -212,6 +213,8 @@ func (a *appState) removeFolder(path string) {
 	a.sources = slices.DeleteFunc(a.sources, func(source string) bool { return source == path })
 	delete(a.sourceNames, path)
 	a.scope = "custom"
+	a.rebuild()
+	a.pruneFamilyPreviews()
 	a.saveSettings()
 	a.refresh()
 }
