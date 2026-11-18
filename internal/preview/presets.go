@@ -6,8 +6,8 @@ type Preset struct {
 }
 
 var Presets = []Preset{
-	{Label: "简体中文", Text: "春眠不觉晓，处处闻啼鸟。夜来风雨声，花落知多少。"},
-	{Label: "繁體中文", Text: "春眠不覺曉，處處聞啼鳥。夜來風雨聲，花落知多少。"},
+	{Label: "简体中文", Text: "月光如流水一般，静静地泻在这一片叶子和花上。"},
+	{Label: "繁體中文", Text: "月光如流水一般，靜靜地瀉在這一片葉子和花上。"},
 	{Label: "日本語", Text: "吾輩は猫である。名前はまだ無い。"},
 	{Label: "한국어", Text: "나 보기가 역겨워 가실 때에는 말없이 고이 보내드리오리다."},
 	{Label: "English", Text: "Shall I compare thee to a summer's day?"},
