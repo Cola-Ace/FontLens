@@ -76,7 +76,7 @@ type appState struct {
 	previewLineHeight float32
 	familyPreviews    bitmapCache
 	samplePreviews    bitmapCache
-	previewLast       map[previewSlot]*ui.Bitmap
+	previewLast       map[previewSlot]displayedPreview
 	previewLoading    map[previewKey]*previewRequest
 	previewWanted     map[previewKey]bool
 	previewSlots      map[previewSlot]bool
@@ -121,9 +121,12 @@ func (a *appState) view(c *ui.Context) {
 	leftWidth, centerWidth := a.leftWidth, a.centerWidth
 	paneScale := min(float32(1), width/1024)
 	leftWidth = min(leftWidth, width-800*paneScale)
-	centerWidth = min(centerWidth, width-leftWidth-280*paneScale-2)
+	centerAndDetailWidth := width - leftWidth - 2
+	centerWidth = min(centerWidth, centerAndDetailWidth-280*paneScale)
 	if ui.Split(c, &leftWidth, func() { a.sidebar(c) }, func() {
-		if ui.Split(c, &centerWidth, func() { a.browser(c, centerWidth) }, func() { a.details(c) }).Fill().Changed() {
+		if ui.Split(c, &centerWidth, func() { a.browser(c, centerWidth) }, func() {
+			a.details(c, centerAndDetailWidth-centerWidth)
+		}).Fill().Changed() {
 			a.centerWidth = centerWidth
 		}
 	}).Fill().Changed() {

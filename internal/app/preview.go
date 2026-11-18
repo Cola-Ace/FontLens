@@ -35,6 +35,12 @@ type previewKey struct {
 	settings string
 }
 
+type displayedPreview struct {
+	bitmap        *ui.Bitmap
+	width, height float32
+	offsetY       float32
+}
+
 type bitmapCache struct {
 	recent map[previewKey]*list.Element
 	order  list.List
@@ -213,7 +219,7 @@ func (a *appState) previewKey(face fonts.Entry, sample string, size float32, wid
 
 func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, width, height int, scale float32) previewKey {
 	if a.previewLoading == nil {
-		a.previewLast = make(map[previewSlot]*ui.Bitmap)
+		a.previewLast = make(map[previewSlot]displayedPreview)
 		a.previewLoading = make(map[previewKey]*previewRequest)
 		a.previewErrors = make(map[previewKey]string)
 	}
@@ -282,8 +288,8 @@ func (a *appState) cancelPreviews(wanted map[previewKey]bool) {
 	}
 	if a.familyPreviews.bytes > familyPreviewBudget || a.samplePreviews.bytes > samplePreviewBudget {
 		pinned := make(map[*ui.Bitmap]bool, len(a.previewLast))
-		for _, bitmap := range a.previewLast {
-			pinned[bitmap] = true
+		for _, last := range a.previewLast {
+			pinned[last.bitmap] = true
 		}
 		a.familyPreviews.trim(wanted, pinned, familyPreviewBudget)
 		a.samplePreviews.trim(wanted, pinned, samplePreviewBudget)
@@ -360,10 +366,6 @@ func previewSlotFor(face fonts.Entry, width, height int) previewSlot {
 
 func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) ui.Element {
 	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
-	var offsetY float32
-	if width == 0 {
-		offsetY = -size * 0.2
-	}
 	key := a.previewKey(face, sample, size, width, height, scale)
 	slot := key.slot
 	cache := a.previewCache(key)
@@ -373,43 +375,36 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 	loading := request != nil && request.hint.show()
 	if bitmap := cache.bitmap(key); bitmap != nil {
 		cache.touch(key)
-		if a.previewSlots[slot] {
-			a.previewLast[slot] = bitmap
-		}
-		displayWidth := float32(width)
-		displayHeight := float32(height)
+		frame := displayedPreview{bitmap: bitmap, width: float32(width), height: float32(height)}
 		if width == 0 {
-			displayWidth, _ = ui.ImageSize(bitmap)
-			displayWidth /= scale
+			pixelWidth, _ := ui.ImageSize(bitmap)
+			frame.width = pixelWidth / scale
+			frame.offsetY = -size * 0.2
 		}
 		if height == 0 {
-			_, displayHeight = ui.ImageSize(bitmap)
-			displayHeight /= scale
+			_, pixelHeight := ui.ImageSize(bitmap)
+			frame.height = pixelHeight / scale
 		}
-		image := previewImage(c, bitmap, displayWidth, displayHeight, offsetY)
+		a.previewLast[slot] = frame
+		image := frame.view(c)
 		if width == 0 {
 			image.Shrink(0)
 		}
 		return image
 	} else if message := a.previewErrors[key]; message != "" {
 		return ui.Text(c, message).TextColor(c.Theme().TextMuted).SingleLine()
-	} else if bitmap := a.previewLast[slot]; bitmap != nil {
-		displayWidth := float32(width)
-		displayHeight := float32(height)
+	} else if last := a.previewLast[slot]; last.bitmap != nil {
+		box := ui.Box(c).Size(last.width, last.height)
 		if width == 0 {
-			displayWidth, _ = ui.ImageSize(bitmap)
-			displayWidth /= scale
-		}
-		if height == 0 {
-			_, displayHeight = ui.ImageSize(bitmap)
-			displayHeight /= scale
-		}
-		box := ui.Box(c).Size(displayWidth, displayHeight)
-		if width == 0 {
-			box.Shrink(0)
+			box.Shrink(0).Height(float32(height))
+		} else if height == 0 {
+			box.Width(float32(width)).Clip()
 		}
 		return box.Children(func() {
-			previewImage(c, bitmap, displayWidth, displayHeight, offsetY)
+			image := last.view(c)
+			if width == 0 || height == 0 {
+				image.Absolute().Left(0).Top(0)
+			}
 			if loading {
 				ui.Text(c, "更新中…").Absolute().Right(4).Bottom(2).FontSize(12).TextColor(c.Theme().TextMuted)
 			}
@@ -431,12 +426,12 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 	}
 }
 
-func previewImage(c *ui.Context, bitmap *ui.Bitmap, width, height, offsetY float32) ui.Element {
-	return ui.Box(c).Size(width, height).Draw(func(p *ui.Painter, r ui.Rect) {
-		w, h := ui.ImageSize(bitmap)
+func (frame displayedPreview) view(c *ui.Context) ui.Element {
+	return ui.Box(c).Size(frame.width, frame.height).Draw(func(p *ui.Painter, r ui.Rect) {
+		w, h := ui.ImageSize(frame.bitmap)
 		scale := min(r.W/w, r.H/h)
 		// Keep the list's baseline adjustment in the pixel-snapped drawing path.
-		dst := ui.Rect{X: r.X + (r.W-w*scale)/2, Y: r.Y + (r.H-h*scale)/2 + offsetY, W: w * scale, H: h * scale}
-		p.ImageRegion(bitmap, ui.Rect{}, dst, ui.ImageOptions{Tint: p.Theme().Text})
+		dst := ui.Rect{X: r.X + (r.W-w*scale)/2, Y: r.Y + (r.H-h*scale)/2 + frame.offsetY, W: w * scale, H: h * scale}
+		p.ImageRegion(frame.bitmap, ui.Rect{}, dst, ui.ImageOptions{Tint: p.Theme().Text})
 	})
 }

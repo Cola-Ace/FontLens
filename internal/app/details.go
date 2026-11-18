@@ -127,14 +127,10 @@ func (a *appState) commitDetails() {
 	a.coverageLoading = nil
 }
 
-func (a *appState) details(c *ui.Context) {
-	panel := ui.Column(c).Fill().Padding(16).Gap(12)
-	width := panel.LayoutBounds().W - 32
-	if width <= 0 {
-		width = defaultDetailWidth - 32
-	}
-	previewWidth := int(width)
-	panel.Children(func() {
+func (a *appState) details(c *ui.Context, width float32) {
+	const padding = 16
+	previewWidth := max(1, int(width-2*padding))
+	ui.Column(c).Fill().Padding(padding).Gap(12).Children(func() {
 		if a.selectedRow < 0 || a.selectedRow >= len(a.rows) {
 			a.releaseDetails()
 			ui.Text(c, "字体详细信息").FontSize(18).Bold()

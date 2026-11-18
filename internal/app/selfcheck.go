@@ -294,7 +294,8 @@ func checkPreviewCache() error {
 	updated.Modified++
 	updatedKey := app.previewKey(updated, updated.Family, 28, 0, 44, 1)
 	app.familyPreviews.put(updatedKey, bitmap)
-	app.previewLast = map[previewSlot]*ui.Bitmap{key.slot: bitmap, updatedKey.slot: bitmap, sample.slot: bitmap}
+	last := displayedPreview{bitmap: bitmap, width: 256, height: 44}
+	app.previewLast = map[previewSlot]displayedPreview{key.slot: last, updatedKey.slot: last, sample.slot: last}
 	pending := app.previewKey(entry, entry.Family, 30, 0, 44, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -303,8 +304,8 @@ func checkPreviewCache() error {
 	app.rows = []fonts.Entry{updated}
 	app.pruneFamilyPreviews()
 	if len(app.familyPreviews.recent) != 1 || app.familyPreviews.order.Len() != 1 || app.familyPreviews.bytes != 256*44*4 ||
-		app.familyPreviews.bitmap(updatedKey) != bitmap || app.previewLast[key.slot] != nil || app.previewLast[updatedKey.slot] != bitmap ||
-		app.samplePreviews.bitmap(sample) != bitmap || app.previewLast[sample.slot] != bitmap ||
+		app.familyPreviews.bitmap(updatedKey) != bitmap || app.previewLast[key.slot].bitmap != nil || app.previewLast[updatedKey.slot] != last ||
+		app.samplePreviews.bitmap(sample) != bitmap || app.previewLast[sample.slot] != last ||
 		ctx.Err() != context.Canceled || len(app.previewLoading) != 0 || len(app.previewErrors) != 0 {
 		return fmt.Errorf("family preview cache pruning after list change mismatch")
 	}
