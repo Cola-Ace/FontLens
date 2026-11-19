@@ -16,21 +16,21 @@ import (
 	"golang.org/x/text/language"
 )
 
-func (a *appState) inScope(face fonts.Entry) bool {
+func (a *appState) inScope(entry *browserEntry) bool {
 	switch a.scope {
 	case "all":
 		return true
 	case "system":
-		return a.systemIDs[face.ID()]
+		return a.systemIDs[entry.id]
 	case "custom":
 		for _, root := range a.sources {
-			if within(root, face.Path) {
+			if within(root, entry.face.Path) {
 				return true
 			}
 		}
 		return false
 	default:
-		return within(a.scope, face.Path)
+		return within(a.scope, entry.face.Path)
 	}
 }
 
@@ -66,7 +66,7 @@ func (a *appState) rebuild() {
 				entry.key = entry.id
 			}
 		}
-		if (a.format == "" || face.Format == a.format) && strings.Contains(entry.name, query) && a.inScope(face) {
+		if (a.format == "" || face.Format == a.format) && strings.Contains(entry.name, query) && a.inScope(entry) {
 			if _, exists := seen[entry.key]; exists {
 				continue
 			}
