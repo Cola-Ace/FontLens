@@ -66,7 +66,7 @@ func (a *appState) rebuild() {
 				entry.key = entry.id
 			}
 		}
-		if a.inScope(face) && (a.format == "" || face.Format == a.format) && strings.Contains(entry.name, query) {
+		if (a.format == "" || face.Format == a.format) && strings.Contains(entry.name, query) && a.inScope(face) {
 			if _, exists := seen[entry.key]; exists {
 				continue
 			}
