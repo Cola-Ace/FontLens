@@ -84,6 +84,7 @@ func (a *appState) refresh() {
 			return faces, err
 		}
 		seen := make(map[string]struct{})
+		directoryScopes := make(map[string][]string)
 		type scanFace struct {
 			face   fonts.Entry
 			system bool
@@ -116,7 +117,7 @@ func (a *appState) refresh() {
 					} else {
 						a.faceIndex[face.ID()] = len(a.faces)
 						a.faces = append(a.faces, face)
-						a.addCount(face)
+						a.addCount(face, directoryScopes)
 					}
 				}
 				for _, path := range dirs {

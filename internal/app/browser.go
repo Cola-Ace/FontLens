@@ -113,28 +113,39 @@ func (a *appState) rebuild() {
 
 func (a *appState) recount() {
 	a.scopeCounts = make(map[string]map[string]struct{})
+	directoryScopes := make(map[string][]string)
 	for _, face := range a.faces {
-		a.addCount(face)
+		a.addCount(face, directoryScopes)
 	}
 }
 
-func (a *appState) addCount(face fonts.Entry) {
+func (a *appState) addCount(face fonts.Entry, directoryScopes map[string][]string) {
 	key := fontNameKey(face)
 	a.addScopeCount("all", key)
 	if a.systemIDs[face.ID()] {
 		a.addScopeCount("system", key)
 	}
-	for _, root := range a.sources {
-		if within(root, face.Path) {
-			a.addScopeCount("custom", key)
-			break
+	directory := filepath.Dir(face.Path)
+	scopes, known := directoryScopes[directory]
+	if !known {
+		for _, root := range a.sources {
+			if within(root, directory) {
+				scopes = append(scopes, "custom")
+				break
+			}
 		}
+		for current := directory; ; {
+			scopes = append(scopes, current)
+			parent := filepath.Dir(current)
+			if parent == current {
+				break
+			}
+			current = parent
+		}
+		directoryScopes[directory] = scopes
 	}
-	for directory := filepath.Dir(face.Path); ; directory = filepath.Dir(directory) {
-		a.addScopeCount(directory, key)
-		if parent := filepath.Dir(directory); parent == directory {
-			break
-		}
+	for _, scope := range scopes {
+		a.addScopeCount(scope, key)
 	}
 }
 
