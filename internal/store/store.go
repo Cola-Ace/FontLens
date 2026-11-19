@@ -3,20 +3,105 @@ package store
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"database/sql"
 	"encoding/gob"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"fontlens/internal/coverage"
 	"fontlens/internal/fonts"
 	_ "modernc.org/sqlite"
 )
 
-const version = 9
+const version = 10
+
+var gzipReaders sync.Pool
+var gzipWriters sync.Pool
+
+const saveFacesSQL = `INSERT INTO faces(path,size,modified,version,payload) VALUES(?,?,?,?,?)
+	ON CONFLICT(path) DO UPDATE SET size=excluded.size, modified=excluded.modified,
+	version=excluded.version, payload=excluded.payload`
 
 type Store struct{ db *sql.DB }
+
+type cachedFaces struct {
+	size, modified int64
+	payload        []byte
+}
+
+type FaceCache struct{ files map[string]cachedFaces }
+
+type FaceRecord struct {
+	Path           string
+	Size, Modified int64
+	Faces          []fonts.Entry
+}
+
+func (s *Store) SaveFacesBatch(ctx context.Context, records []FaceRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	payloads := make([][]byte, len(records))
+	for i, record := range records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var err error
+		payloads[i], err = encode(record.Faces)
+		if err != nil {
+			return err
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statement, err := tx.PrepareContext(ctx, saveFacesSQL)
+	if err != nil {
+		return err
+	}
+	defer statement.Close()
+	for i, record := range records {
+		if _, err := statement.ExecContext(ctx, record.Path, record.Size, record.Modified, version, payloads[i]); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) LoadFaces(ctx context.Context) (*FaceCache, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT path,size,modified,payload FROM faces WHERE version=?`, version)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cache := &FaceCache{files: make(map[string]cachedFaces)}
+	for rows.Next() {
+		var path string
+		var file cachedFaces
+		if err := rows.Scan(&path, &file.size, &file.modified, &file.payload); err != nil {
+			return nil, err
+		}
+		cache.files[path] = file
+	}
+	return cache, rows.Err()
+}
+
+func (c *FaceCache) Faces(path string, size, modified int64) ([]fonts.Entry, bool) {
+	file, found := c.files[path]
+	if !found || file.size != size || file.modified != modified {
+		return nil, false
+	}
+	var faces []fonts.Entry
+	if decode(file.payload, &faces) != nil {
+		return nil, false
+	}
+	return faces, true
+}
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -62,9 +147,7 @@ func (s *Store) SaveFaces(path string, size, modified int64, faces []fonts.Entry
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT INTO faces(path,size,modified,version,payload) VALUES(?,?,?,?,?)
-		ON CONFLICT(path) DO UPDATE SET size=excluded.size, modified=excluded.modified,
-		version=excluded.version, payload=excluded.payload`, path, size, modified, version, payload)
+	_, err = s.db.Exec(saveFacesSQL, path, size, modified, version, payload)
 	return err
 }
 
@@ -93,10 +176,17 @@ func (s *Store) SaveCoverage(key string, result coverage.Result) error {
 
 func encode(value any) ([]byte, error) {
 	var buffer bytes.Buffer
-	zip, err := gzip.NewWriterLevel(&buffer, gzip.BestSpeed)
-	if err != nil {
-		return nil, err
+	zip, _ := gzipWriters.Get().(*gzip.Writer)
+	if zip == nil {
+		var err error
+		zip, err = gzip.NewWriterLevel(&buffer, gzip.BestSpeed)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		zip.Reset(&buffer)
 	}
+	defer gzipWriters.Put(zip)
 	if err := gob.NewEncoder(zip).Encode(value); err != nil {
 		zip.Close()
 		return nil, err
@@ -108,11 +198,20 @@ func encode(value any) ([]byte, error) {
 }
 
 func decode(payload []byte, value any) error {
-	zip, err := gzip.NewReader(bytes.NewReader(payload))
+	zip, _ := gzipReaders.Get().(*gzip.Reader)
+	var err error
+	if zip == nil {
+		zip, err = gzip.NewReader(bytes.NewReader(payload))
+	} else {
+		err = zip.Reset(bytes.NewReader(payload))
+	}
 	if err != nil {
 		return err
 	}
-	defer zip.Close()
+	defer func() {
+		zip.Close()
+		gzipReaders.Put(zip)
+	}()
 	if err := gob.NewDecoder(zip).Decode(value); err != nil {
 		return fmt.Errorf("cache decode: %w", err)
 	}

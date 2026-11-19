@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"fontlens/internal/coverage"
+	"github.com/egoist/mygo"
 )
 
 type settings struct {
@@ -23,6 +24,7 @@ type settings struct {
 	TableWidths       map[string]float32    `json:"tableWidths,omitempty"`
 	PreviewPreset     string                `json:"previewPreset"`
 	CustomPreviewText string                `json:"customPreviewText"`
+	PreviewOverrides  map[string]string     `json:"previewOverrides,omitempty"`
 }
 
 func settingsPath() string {
@@ -31,6 +33,17 @@ func settingsPath() string {
 		return ""
 	}
 	return filepath.Join(base, "FontLens", "settings.json")
+}
+
+func (a *appState) applyTheme() {
+	source := mygo.ThemeSystem
+	switch a.themeMode {
+	case 1:
+		source = mygo.ThemeLight
+	case 2:
+		source = mygo.ThemeDark
+	}
+	mygo.Theme.SetSource(source)
 }
 
 func (a *appState) loadSettings() {
@@ -53,6 +66,7 @@ func (a *appState) loadSettings() {
 		}
 		a.charsets = saved.Charsets
 		a.charsetRevision = saved.CharsetRevision
+		a.previewOverrides = saved.PreviewOverrides
 		if saved.PreviewPreset != "" {
 			a.customPreviewText = saved.CustomPreviewText
 			a.selectPreviewPreset(saved.PreviewPreset)
@@ -104,7 +118,7 @@ func (a *appState) saveSettings() {
 		LeftWidth: a.leftWidth, CenterWidth: a.centerWidth,
 		CoverageSplit: a.coverageSplit,
 		TableWidths:   a.table.Columns.Widths,
-		PreviewPreset: a.previewPreset, CustomPreviewText: a.customPreviewText,
+		PreviewPreset: a.previewPreset, CustomPreviewText: a.customPreviewText, PreviewOverrides: a.previewOverrides,
 	}, "", "  ")
 	if err == nil {
 		_ = os.WriteFile(path, data, 0600)

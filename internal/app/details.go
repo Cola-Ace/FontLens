@@ -1,8 +1,8 @@
 package app
 
 import (
+	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -11,11 +11,9 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-type detailResult struct {
-	face        fonts.Face
-	coverage    coverage.Result
-	coverageKey string
-}
+type detailResult struct{ face fonts.Face }
+
+var detailSlots = make(chan struct{}, 1)
 
 func (a *appState) detailsMatch(value string) bool {
 	return strings.Contains(strings.ToLower(value), strings.ToLower(a.detailsQuery))
@@ -42,14 +40,15 @@ func (a *appState) releaseDetails() {
 		return
 	}
 	a.detailGeneration++
+	if a.cancelDetails != nil {
+		a.cancelDetails()
+	}
+	a.stopCoverage()
 	a.detailLoading.finish()
 	a.detailLoading = nil
 	a.detailKey, a.detailError = "", ""
 	a.detailFace = nil
 	a.detailPending = nil
-	for _, hint := range a.coverageLoading {
-		hint.finish()
-	}
 	a.coverageCache, a.coverageLoading = nil, nil
 	a.rawLoading.finish()
 	a.rawFace, a.rawData = fonts.Entry{}, nil
@@ -62,28 +61,35 @@ func (a *appState) ensureDetails(entry fonts.Entry) *fonts.Face {
 		return a.detailFace
 	}
 	a.detailGeneration++
+	if a.cancelDetails != nil {
+		a.cancelDetails()
+	}
+	a.stopCoverage()
 	a.detailPending = nil
 	a.detailLoading.finish()
 	a.detailLoading = newLoadingHint(a.window)
-	for _, hint := range a.coverageLoading {
-		hint.finish()
-	}
 	a.detailError = ""
 	a.rawLoading.finish()
 	a.rawFace, a.rawData = fonts.Entry{}, nil
 	a.rawViewOpen = false
 	a.detailKey = key
 	generation := a.detailGeneration
-	cacheKey := a.coverageCacheKey(entry)
-	imported := slices.Clone(a.charsets)
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cancelDetails = cancel
 	go func() {
-		face, err := fonts.ReadFace(entry.Path, entry.Index)
-		var result coverage.Result
-		if err == nil && coverageKey(face.Entry) == key && face.HasUnicodeCmap() {
-			result = a.readCoverage(face, cacheKey, imported)
+		select {
+		case detailSlots <- struct{}{}:
+			defer func() { <-detailSlots }()
+		case <-ctx.Done():
+			return
+		}
+		face, err := fonts.ReadFaceContext(ctx, entry.Path, entry.Index)
+		if ctx.Err() != nil {
+			return
 		}
 		a.window.Update(func() {
-			if generation != a.detailGeneration || key != a.detailKey {
+			defer cancel()
+			if ctx.Err() != nil || generation != a.detailGeneration || key != a.detailKey {
 				return
 			}
 			if err != nil {
@@ -93,7 +99,7 @@ func (a *appState) ensureDetails(entry fonts.Entry) *fonts.Face {
 				a.detailFace = nil
 				a.detailError = "字体文件已更改，请刷新列表"
 			} else {
-				a.detailPending = &detailResult{face: face, coverage: result, coverageKey: cacheKey}
+				a.detailPending = &detailResult{face: face}
 				return
 			}
 			a.detailLoading.finish()
@@ -112,21 +118,19 @@ func (a *appState) commitDetails() {
 	for _, hint := range a.coverageLoading {
 		hint.finish()
 	}
-	a.coverageCache = make(map[string]coverage.Result)
-	a.coverageLoading = make(map[string]*loadingHint)
-	if result.face.HasUnicodeCmap() && result.coverageKey == a.coverageCacheKey(result.face.Entry) {
-		a.coverageCache[result.coverageKey] = result.coverage
+	key := a.coverageCacheKey(result.face.Entry)
+	if cached, ready := a.coverageCache[key]; ready {
+		a.coverageCache = map[string]coverage.Result{key: cached}
+	} else {
+		a.coverageCache = nil
 	}
+	a.coverageLoading = nil
 }
 
-func (a *appState) details(c *ui.Context) {
-	panel := ui.Column(c).Fill().Padding(16).Gap(12)
-	width := panel.LayoutBounds().W - 32
-	if width <= 0 {
-		width = defaultDetailWidth - 32
-	}
-	previewWidth := int(width)
-	panel.Children(func() {
+func (a *appState) details(c *ui.Context, width float32) {
+	const padding = 16
+	previewWidth := max(1, int(width-2*padding))
+	ui.Column(c).Fill().Padding(padding).Gap(12).Children(func() {
 		if a.selectedRow < 0 || a.selectedRow >= len(a.rows) {
 			a.releaseDetails()
 			ui.Text(c, "字体详细信息").FontSize(18).Bold()
@@ -136,9 +140,11 @@ func (a *appState) details(c *ui.Context) {
 		face := a.ensureDetails(a.rows[a.selectedRow])
 		if pending := a.detailPending; pending != nil {
 			a.initAxes(pending.face)
+			a.ensureCoverage(pending.face)
+			_, coverageReady := a.coverageCache[a.coverageCacheKey(pending.face.Entry)]
 			key := a.syncPreview(c, pending.face.Entry, a.previewText, a.previewSize, previewWidth, 0)
-			// Publish the new font's text and preview together, including render errors.
-			if a.previewBitmaps[key] != nil || a.previewErrors[key] != "" {
+			// Publish details, preview and coverage together, including render errors.
+			if (coverageReady || !pending.face.HasUnicodeCmap()) && (a.previewCache(key).bitmap(key) != nil || a.previewErrors[key] != "") {
 				a.commitDetails()
 				face = a.detailFace
 			}

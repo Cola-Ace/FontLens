@@ -94,10 +94,14 @@ func (a *appState) sidebar(c *ui.Context) {
 							p.StrokePath(&folder, 1.25, ink)
 						}
 						if isSource {
+							mark := c.Theme().AccentText
+							if node == a.scope {
+								mark = c.Theme().Accent
+							}
 							var home ui.Path
 							home.MoveTo(x+4, y+6).LineTo(x+6.5, y+4).LineTo(x+9, y+6)
 							home.MoveTo(x+4.5, y+6).LineTo(x+4.5, y+8.5).LineTo(x+8.5, y+8.5).LineTo(x+8.5, y+6)
-							p.StrokePath(&home, 1, c.Theme().Surface)
+							p.StrokePath(&home, 1, mark)
 						} else if a.tree.Open.Has(node) && len(a.treeChildren(node)) > 0 {
 							var flap ui.Path
 							flap.MoveTo(x+1, y+4).LineTo(x+12, y+4)
@@ -140,6 +144,7 @@ func (a *appState) sidebar(c *ui.Context) {
 		}).Grow(1).Changed() {
 			a.scope = a.tree.Item(a.treeRow)
 			a.rebuild()
+			a.pruneFamilyPreviews()
 			a.table.ScrollTo(0, ui.Start)
 			a.saveSettings()
 		}
@@ -165,6 +170,7 @@ func (a *appState) sidebar(c *ui.Context) {
 		themes := []string{"跟随系统", "浅色", "深色"}
 		if ui.Button(c, "主题："+themes[a.themeMode]).Clicked() {
 			a.themeMode = (a.themeMode + 1) % len(themes)
+			a.applyTheme()
 			a.saveSettings()
 		}
 	})
@@ -207,6 +213,8 @@ func (a *appState) removeFolder(path string) {
 	a.sources = slices.DeleteFunc(a.sources, func(source string) bool { return source == path })
 	delete(a.sourceNames, path)
 	a.scope = "custom"
+	a.rebuild()
+	a.pruneFamilyPreviews()
 	a.saveSettings()
 	a.refresh()
 }

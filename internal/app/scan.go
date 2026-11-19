@@ -10,21 +10,26 @@ import (
 	"time"
 
 	"fontlens/internal/fonts"
+	"fontlens/internal/store"
 )
 
-func (a *appState) readFaces(path string) ([]fonts.Entry, error) {
+func (a *appState) readFaces(path string, cached *store.FaceCache, pending *[]store.FaceRecord) ([]fonts.Entry, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
 	}
-	if a.store != nil {
+	if cached != nil {
+		if faces, found := cached.Faces(path, info.Size(), info.ModTime().UnixNano()); found {
+			return faces, nil
+		}
+	} else if a.store != nil {
 		if faces, found := a.store.Faces(path, info.Size(), info.ModTime().UnixNano()); found {
 			return faces, nil
 		}
 	}
 	faces, err := fonts.ReadIndex(path)
 	if err == nil && a.store != nil {
-		_ = a.store.SaveFaces(path, info.Size(), info.ModTime().UnixNano(), faces)
+		*pending = append(*pending, store.FaceRecord{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano(), Faces: faces})
 	}
 	return faces, err
 }
@@ -59,6 +64,25 @@ func (a *appState) refresh() {
 	a.recount()
 	roots := slices.Clone(a.sources)
 	go func() {
+		var cached *store.FaceCache
+		if a.store != nil {
+			cached, _ = a.store.LoadFaces(ctx)
+		}
+		pending := make([]store.FaceRecord, 0, 128)
+		flushCache := func() {
+			if len(pending) > 0 {
+				_ = a.store.SaveFacesBatch(context.Background(), pending)
+				clear(pending)
+				pending = pending[:0]
+			}
+		}
+		readFaces := func(path string) ([]fonts.Entry, error) {
+			faces, err := a.readFaces(path, cached, &pending)
+			if len(pending) >= cap(pending) {
+				flushCache()
+			}
+			return faces, err
+		}
 		seen := make(map[string]struct{})
 		type scanFace struct {
 			face   fonts.Entry
@@ -67,6 +91,7 @@ func (a *appState) refresh() {
 		batch := make([]scanFace, 0, 512)
 		var directories, messages []string
 		lastFlush := time.Now()
+		var lastRebuild time.Time
 		flush := func() {
 			if len(batch)+len(directories)+len(messages) == 0 || ctx.Err() != nil {
 				return
@@ -101,8 +126,9 @@ func (a *appState) refresh() {
 					}
 				}
 				a.errors = append(a.errors, errors...)
-				if len(ready) > 0 {
+				if len(ready) > 0 && time.Since(lastRebuild) >= 250*time.Millisecond {
 					a.rebuild()
+					lastRebuild = time.Now()
 				}
 			})
 			// Keep at most one scan update queued so cached reads cannot flood the UI thread.
@@ -150,7 +176,7 @@ func (a *appState) refresh() {
 			if ctx.Err() != nil {
 				break
 			}
-			faces, err := a.readFaces(path)
+			faces, err := readFaces(path)
 			if err != nil {
 				report(fmt.Sprintf("%s: %v", path, err))
 				continue
@@ -169,7 +195,7 @@ func (a *appState) refresh() {
 			if _, err := os.Stat(root); err != nil {
 				continue
 			}
-			_ = fonts.Scan(ctx, root, a.readFaces, func(path string) {
+			_ = fonts.Scan(ctx, root, readFaces, func(path string) {
 				if path == root {
 					return
 				}
@@ -182,6 +208,7 @@ func (a *appState) refresh() {
 			})
 			flush()
 		}
+		flushCache()
 		a.window.Update(func() {
 			if current == a.scanID {
 				if ctx.Err() == nil {
@@ -205,6 +232,7 @@ func (a *appState) refresh() {
 				a.scanning = false
 				a.cancelScan = nil
 				a.rebuild()
+				a.pruneFamilyPreviews()
 			}
 		})
 	}()

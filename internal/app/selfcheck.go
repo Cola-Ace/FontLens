@@ -3,14 +3,18 @@ package app
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"unicode"
 
 	"fontlens/internal/codepoints"
@@ -18,6 +22,7 @@ import (
 	"fontlens/internal/fonts"
 	"fontlens/internal/preview"
 	"fontlens/internal/store"
+	"github.com/egoist/mygo/ui"
 )
 
 func selfCheck(fontPath, sample string) error {
@@ -28,6 +33,12 @@ func selfCheck(fontPath, sample string) error {
 		return err
 	}
 	if err := checkFontDeduplication(); err != nil {
+		return err
+	}
+	if err := checkBrowserMetadata(); err != nil {
+		return err
+	}
+	if err := checkPreviewCache(); err != nil {
 		return err
 	}
 	for _, preset := range preview.Presets {
@@ -46,6 +57,13 @@ func selfCheck(fontPath, sample string) error {
 		return fmt.Errorf("Unicode version: %s", unicode.Version)
 	}
 	result := coverage.Analyze(nil)
+	contextResult, err := coverage.AnalyzeWithContext(context.Background(), nil, []coverage.Definition{imported})
+	if err != nil || !reflect.DeepEqual(contextResult, coverage.AnalyzeWith(nil, []coverage.Definition{imported})) {
+		return fmt.Errorf("context coverage result mismatch: %v", err)
+	}
+	if _, err := coverage.AnalyzeWithContext(&cancelCheckContext{Context: context.Background(), checks: 3}, nil, nil); !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("in-progress coverage cancellation: %v", err)
+	}
 	expectedTotals := []int{6763, 20923, 27584, 27780, 97908, 8105, 3500, 3000, 1605, 13706, 5033, 6879, 11209, 8224, 11172}
 	if len(result.Charsets) != len(expectedTotals) {
 		return fmt.Errorf("builtin charset count mismatch")
@@ -110,6 +128,19 @@ func selfCheck(fontPath, sample string) error {
 		}
 	}
 	return fmt.Errorf("no readable system font")
+}
+
+type cancelCheckContext struct {
+	context.Context
+	checks int
+}
+
+func (c *cancelCheckContext) Err() error {
+	if c.checks == 0 {
+		return context.Canceled
+	}
+	c.checks--
+	return nil
 }
 
 func checkScopeCounts() error {
@@ -185,6 +216,102 @@ func checkFontDeduplication() error {
 	return nil
 }
 
+func checkBrowserMetadata() error {
+	app := appState{scope: "all", sortMode: 1, faces: []fonts.Entry{
+		{Path: "first.ttf", FullName: "Font 10"},
+		{Path: "second.ttf", FullName: "Font 2"},
+	}}
+	app.rebuild()
+	app.faces[0].FullName = "Font 1"
+	app.selectedID = app.faces[0].ID()
+	app.rebuild()
+	if app.rows[0].FullName != "Font 1" || app.selectedRow != 0 {
+		return fmt.Errorf("changed browser metadata was not refreshed")
+	}
+	slices.Reverse(app.faces)
+	app.query = "FONT 1"
+	app.rebuild()
+	if len(app.rows) != 1 || app.rows[0].ID() != app.selectedID {
+		return fmt.Errorf("reordered browser metadata or case-insensitive search mismatch")
+	}
+	app.faces = app.faces[:1]
+	app.query = ""
+	app.rebuild()
+	if len(app.rows) != 1 || app.rows[0].FullName != "Font 2" || app.selectedID != "" || len(app.browserEntries) != 1 {
+		return fmt.Errorf("removed browser metadata or selection mismatch")
+	}
+	return nil
+}
+
+func checkPreviewCache() error {
+	cache := bitmapCache{}
+	old := previewKey{settings: "old"}
+	recent := previewKey{settings: "recent"}
+	newest := previewKey{settings: "new"}
+	for _, key := range []previewKey{old, recent, newest} {
+		cache.put(key, ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 2, 2))))
+	}
+	cache.touch(old)
+	cache.trim(nil, nil, 32)
+	if cache.bitmap(recent) != nil || cache.bitmap(old) == nil || cache.bitmap(newest) == nil || cache.bytes != 32 {
+		return fmt.Errorf("preview cache LRU eviction mismatch")
+	}
+	cache.trim(map[previewKey]bool{old: true}, map[*ui.Bitmap]bool{cache.bitmap(newest): true}, 0)
+	if len(cache.recent) != 2 || cache.bytes != 32 {
+		return fmt.Errorf("preview cache evicted displayed or fallback bitmap")
+	}
+	cache.put(old, ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 1, 1))))
+	if cache.bytes != 20 || cache.order.Len() != 2 {
+		return fmt.Errorf("preview cache replacement accounting mismatch")
+	}
+	cache.trim(nil, nil, 0)
+	if cache.bytes != 0 || cache.order.Len() != 0 || len(cache.recent) != 0 {
+		return fmt.Errorf("preview cache retained unpinned bitmaps")
+	}
+
+	app := appState{previewLoading: make(map[previewKey]*previewRequest)}
+	entry := fonts.Entry{Path: "cached-preview.ttf", Family: "Cached"}
+	key := app.previewKey(entry, entry.Family, 28, 0, 44, 1)
+	sample := app.previewKey(entry, "sample", 28, 260, 52, 1)
+	bitmap := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 256, 44)))
+	app.samplePreviews.put(sample, bitmap)
+	app.familyPreviews.put(key, bitmap)
+	app.cancelPreviews(nil)
+	if app.familyPreviews.bitmap(key) != bitmap || app.ensurePreview(entry, entry.Family, 28, 0, 44, 1) != key || len(app.previewLoading) != 0 {
+		return fmt.Errorf("recent preview was rendered again after leaving the viewport")
+	}
+	for index := range 928 {
+		face := fonts.Entry{Path: fmt.Sprintf("font-%d.ttf", index), Family: "Font"}
+		app.familyPreviews.put(app.previewKey(face, face.Family, 28, 0, 44, 1), bitmap)
+		app.cancelPreviews(nil)
+	}
+	if app.familyPreviews.bytes > familyPreviewBudget || app.familyPreviews.bitmap(key) != nil || app.samplePreviews.bitmap(sample) != bitmap {
+		return fmt.Errorf("family preview cache exceeded its own budget")
+	}
+
+	app.familyPreviews.put(key, bitmap)
+	updated := entry
+	updated.Modified++
+	updatedKey := app.previewKey(updated, updated.Family, 28, 0, 44, 1)
+	app.familyPreviews.put(updatedKey, bitmap)
+	last := displayedPreview{bitmap: bitmap, width: 256, height: 44}
+	app.previewLast = map[previewSlot]displayedPreview{key.slot: last, updatedKey.slot: last, sample.slot: last}
+	pending := app.previewKey(entry, entry.Family, 30, 0, 44, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app.previewLoading[pending] = &previewRequest{cancel: cancel}
+	app.previewErrors = map[previewKey]string{key: "old error"}
+	app.rows = []fonts.Entry{updated}
+	app.pruneFamilyPreviews()
+	if len(app.familyPreviews.recent) != 1 || app.familyPreviews.order.Len() != 1 || app.familyPreviews.bytes != 256*44*4 ||
+		app.familyPreviews.bitmap(updatedKey) != bitmap || app.previewLast[key.slot].bitmap != nil || app.previewLast[updatedKey.slot] != last ||
+		app.samplePreviews.bitmap(sample) != bitmap || app.previewLast[sample.slot] != last ||
+		ctx.Err() != context.Canceled || len(app.previewLoading) != 0 || len(app.previewErrors) != 0 {
+		return fmt.Errorf("family preview cache pruning after list change mismatch")
+	}
+	return nil
+}
+
 func checkFont(path, sample string) error {
 	faces, err := fonts.Read(path)
 	if err != nil {
@@ -192,6 +319,18 @@ func checkFont(path, sample string) error {
 	}
 	if len(faces) == 0 || faces[0].FullName == "" {
 		return fmt.Errorf("font has no readable face")
+	}
+	selected, err := fonts.ReadFaceContext(context.Background(), path, 0)
+	if err != nil || !reflect.DeepEqual(selected, faces[0]) {
+		return fmt.Errorf("context font read mismatch: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := fonts.ReadFaceContext(ctx, path, 0); !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("cancelled font read: %v", err)
+	}
+	if _, err := fonts.ReadFaceContext(&cancelCheckContext{Context: context.Background(), checks: 3}, path, 0); err == nil {
+		return fmt.Errorf("in-progress font cancellation failed")
 	}
 	if len(faces[0].Properties) == 0 {
 		return fmt.Errorf("font metadata is empty")
@@ -397,6 +536,26 @@ func checkStore(path string, faces []fonts.Face) error {
 	if !found || !slices.Equal(reloaded, entries) {
 		return fmt.Errorf("font index cache mismatch")
 	}
+	snapshot, err := cache.LoadFaces(context.Background())
+	if err != nil {
+		return fmt.Errorf("font cache snapshot: %w", err)
+	}
+	if loaded, ok := snapshot.Faces(path, face.Size, face.Modified); !ok || !slices.Equal(loaded, entries) {
+		return fmt.Errorf("font cache snapshot mismatch")
+	}
+	for _, changed := range [][2]int64{{face.Size + 1, face.Modified}, {face.Size, face.Modified + 1}} {
+		if _, ok := snapshot.Faces(path, changed[0], changed[1]); ok {
+			return fmt.Errorf("font cache snapshot accepted changed file")
+		}
+	}
+	if _, ok := snapshot.Faces(path+".missing", face.Size, face.Modified); ok {
+		return fmt.Errorf("font cache snapshot accepted missing file")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := cache.LoadFaces(ctx); err != context.Canceled {
+		return fmt.Errorf("font cache snapshot cancellation: %v", err)
+	}
 	key := coverageKey(face.Entry)
 	result := coverage.Analyze(face.Characters)
 	if err := cache.SaveCoverage(key, result); err != nil {
@@ -405,6 +564,69 @@ func checkStore(path string, faces []fonts.Face) error {
 	cached, found := cache.Coverage(key)
 	if !found || cached.Codepoints != result.Codepoints || len(cached.Blocks) != len(result.Blocks) {
 		return fmt.Errorf("coverage cache mismatch")
+	}
+	records := make([]store.FaceRecord, 130)
+	for i := range records {
+		entry := entries[0]
+		entry.Path = fmt.Sprintf("%s.batch-%d", path, i)
+		records[i] = store.FaceRecord{Path: entry.Path, Size: entry.Size, Modified: entry.Modified, Faces: []fonts.Entry{entry}}
+	}
+	if err := cache.SaveFacesBatch(context.Background(), records); err != nil {
+		return fmt.Errorf("font cache batch write: %w", err)
+	}
+	for _, record := range records {
+		if loaded, ok := cache.Faces(record.Path, record.Size, record.Modified); !ok || !slices.Equal(loaded, record.Faces) {
+			return fmt.Errorf("font cache batch record mismatch")
+		}
+	}
+	records[0].Faces[0].FullName = "Updated batch entry"
+	if err := cache.SaveFacesBatch(context.Background(), records[:1]); err != nil {
+		return fmt.Errorf("font cache batch update: %w", err)
+	}
+	if loaded, ok := cache.Faces(records[0].Path, records[0].Size, records[0].Modified); !ok || !slices.Equal(loaded, records[0].Faces) {
+		return fmt.Errorf("font cache batch update mismatch")
+	}
+	if err := cache.SaveFacesBatch(ctx, records); !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("font cache batch cancellation: %v", err)
+	}
+	checkDB, err := sql.Open("sqlite", filepath.Join(dir, "index.db"))
+	if err != nil {
+		return err
+	}
+	defer checkDB.Close()
+	if _, err := checkDB.Exec(`CREATE TRIGGER reject_batch BEFORE INSERT ON faces
+		WHEN NEW.path='reject-batch' BEGIN SELECT RAISE(ABORT, 'batch rollback check'); END`); err != nil {
+		return err
+	}
+	rollbackRecords := []store.FaceRecord{{Path: "rollback-batch", Faces: entries}, {Path: "reject-batch", Faces: entries}}
+	if err := cache.SaveFacesBatch(context.Background(), rollbackRecords); err == nil {
+		return fmt.Errorf("font cache batch accepted rejected record")
+	}
+	if _, ok := cache.Faces("rollback-batch", 0, 0); ok {
+		return fmt.Errorf("font cache batch retained partial writes")
+	}
+	var readers sync.WaitGroup
+	failures := make(chan error, 8)
+	for range 8 {
+		readers.Go(func() {
+			for range 32 {
+				loaded, ok := cache.Faces(path, face.Size, face.Modified)
+				if !ok || !slices.Equal(loaded, entries) {
+					failures <- fmt.Errorf("concurrent font cache mismatch")
+					return
+				}
+				loadedCoverage, ok := cache.Coverage(key)
+				if !ok || loadedCoverage.Codepoints != result.Codepoints || len(loadedCoverage.Blocks) != len(result.Blocks) {
+					failures <- fmt.Errorf("concurrent coverage cache mismatch")
+					return
+				}
+			}
+		})
+	}
+	readers.Wait()
+	close(failures)
+	for err := range failures {
+		return err
 	}
 	return nil
 }

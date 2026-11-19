@@ -28,6 +28,8 @@ type appState struct {
 	detailFace        *fonts.Face
 	detailKey         string
 	detailGeneration  int
+	cancelDetails     context.CancelFunc
+	cancelCoverage    context.CancelFunc
 	detailError       string
 	detailLoading     *loadingHint
 	detailPending     *detailResult
@@ -48,6 +50,7 @@ type appState struct {
 	tableSort         ui.SortOrder
 	sortSeen          ui.SortOrder
 	faces             []fonts.Entry
+	browserEntries    []browserEntry
 	faceIndex         map[string]int
 	systemIDs         map[string]bool
 	scopeCounts       map[string]map[string]struct{}
@@ -68,14 +71,16 @@ type appState struct {
 	previewText       string
 	previewPreset     string
 	customPreviewText string
+	previewOverrides  map[string]string
 	previewSize       float32
 	previewLineHeight float32
-	previewBitmaps    map[string]*ui.Bitmap
-	previewLast       map[string]*ui.Bitmap
-	previewLoading    map[string]*previewRequest
-	previewWanted     map[string]bool
-	previewSlots      map[string]bool
-	previewErrors     map[string]string
+	familyPreviews    bitmapCache
+	samplePreviews    bitmapCache
+	previewLast       map[previewSlot]displayedPreview
+	previewLoading    map[previewKey]*previewRequest
+	previewWanted     map[previewKey]bool
+	previewSlots      map[previewSlot]bool
+	previewErrors     map[previewKey]string
 	compareIDs        []string
 	comparePage       bool
 	compareLimit      bool
@@ -93,18 +98,13 @@ type appState struct {
 }
 
 func (a *appState) view(c *ui.Context) {
-	a.previewWanted = make(map[string]bool)
+	animateTheme(c)
+	a.previewWanted = make(map[previewKey]bool)
 	// Keep displayed previews available when returning from pages without previews.
 	if !a.rawViewOpen && !a.coveragePage {
-		a.previewSlots = make(map[string]bool)
+		a.previewSlots = make(map[previewSlot]bool)
 	}
 	defer a.cancelPreviews(a.previewWanted)
-	switch a.themeMode {
-	case 1:
-		c.SetTheme(ui.LightTheme())
-	case 2:
-		c.SetTheme(ui.DarkTheme())
-	}
 	if a.comparePage {
 		a.compareView(c)
 		return
@@ -121,9 +121,12 @@ func (a *appState) view(c *ui.Context) {
 	leftWidth, centerWidth := a.leftWidth, a.centerWidth
 	paneScale := min(float32(1), width/1024)
 	leftWidth = min(leftWidth, width-800*paneScale)
-	centerWidth = min(centerWidth, width-leftWidth-280*paneScale-2)
+	centerAndDetailWidth := width - leftWidth - 2
+	centerWidth = min(centerWidth, centerAndDetailWidth-280*paneScale)
 	if ui.Split(c, &leftWidth, func() { a.sidebar(c) }, func() {
-		if ui.Split(c, &centerWidth, func() { a.browser(c, centerWidth) }, func() { a.details(c) }).Fill().Changed() {
+		if ui.Split(c, &centerWidth, func() { a.browser(c, centerWidth) }, func() {
+			a.details(c, centerAndDetailWidth-centerWidth)
+		}).Fill().Changed() {
 			a.centerWidth = centerWidth
 		}
 	}).Fill().Changed() {
