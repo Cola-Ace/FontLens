@@ -7,31 +7,95 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"fontlens/internal/fonts"
 	"fontlens/internal/store"
 )
 
-func (a *appState) readFaces(path string, cached *store.FaceCache, pending *[]store.FaceRecord) ([]fonts.Entry, error) {
+type scanReader struct {
+	store   *store.Store
+	cache   *store.FaceCache
+	pending []store.FaceRecord
+}
+
+type faceLookup struct {
+	record store.FaceRecord
+	hit    bool
+	err    error
+}
+
+func (reader *scanReader) lookup(path string) faceLookup {
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, err
+		return faceLookup{err: err}
 	}
-	if cached != nil {
-		if faces, found := cached.Faces(path, info.Size(), info.ModTime().UnixNano()); found {
-			return faces, nil
-		}
-	} else if a.store != nil {
-		if faces, found := a.store.Faces(path, info.Size(), info.ModTime().UnixNano()); found {
-			return faces, nil
-		}
+	record := store.FaceRecord{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano()}
+	var hit bool
+	if reader.cache != nil {
+		record.Faces, hit = reader.cache.Faces(path, record.Size, record.Modified)
+	} else if reader.store != nil {
+		record.Faces, hit = reader.store.Faces(path, record.Size, record.Modified)
 	}
-	faces, err := fonts.ReadIndex(path)
-	if err == nil && a.store != nil {
-		*pending = append(*pending, store.FaceRecord{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano(), Faces: faces})
+	return faceLookup{record: record, hit: hit}
+}
+
+func (reader *scanReader) read(lookup faceLookup) ([]fonts.Entry, error) {
+	record := lookup.record
+	if lookup.err != nil || lookup.hit {
+		return record.Faces, lookup.err
+	}
+	faces, err := fonts.ReadIndex(record.Path)
+	if err == nil && reader.store != nil {
+		record.Faces = faces
+		if len(faces) > 0 {
+			record.Size, record.Modified = faces[0].Size, faces[0].Modified
+		}
+		reader.pending = append(reader.pending, record)
+		if len(reader.pending) >= 128 {
+			reader.flush()
+		}
 	}
 	return faces, err
+}
+
+func (reader *scanReader) flush() {
+	if len(reader.pending) > 0 {
+		_ = reader.store.SaveFacesBatch(context.Background(), reader.pending)
+		clear(reader.pending)
+		reader.pending = reader.pending[:0]
+	}
+}
+
+func (reader *scanReader) scan(ctx context.Context, root string, directory func(string), visit func(fonts.Entry), report func(string, error)) error {
+	return fonts.WalkFiles(ctx, root, func(paths []string) {
+		results := make([]faceLookup, len(paths))
+		lookup := func(start int) {
+			for index := start; index < len(paths) && ctx.Err() == nil; index += 2 {
+				results[index] = reader.lookup(paths[index])
+			}
+		}
+		var workers sync.WaitGroup
+		if len(paths) > 1 {
+			workers.Go(func() { lookup(1) })
+		}
+		lookup(0)
+		workers.Wait()
+		for index, result := range results {
+			if ctx.Err() != nil {
+				return
+			}
+			faces, err := reader.read(result)
+			if err != nil {
+				report(paths[index], err)
+				continue
+			}
+			for _, face := range faces {
+				visit(face)
+			}
+		}
+	}, directory, report)
 }
 
 func systemSources() []string {
@@ -64,24 +128,9 @@ func (a *appState) refresh() {
 	a.recount()
 	roots := slices.Clone(a.sources)
 	go func() {
-		var cached *store.FaceCache
+		reader := scanReader{store: a.store}
 		if a.store != nil {
-			cached, _ = a.store.LoadFaces(ctx)
-		}
-		pending := make([]store.FaceRecord, 0, 128)
-		flushCache := func() {
-			if len(pending) > 0 {
-				_ = a.store.SaveFacesBatch(context.Background(), pending)
-				clear(pending)
-				pending = pending[:0]
-			}
-		}
-		readFaces := func(path string) ([]fonts.Entry, error) {
-			faces, err := a.readFaces(path, cached, &pending)
-			if len(pending) >= cap(pending) {
-				flushCache()
-			}
-			return faces, err
+			reader.cache, _ = a.store.LoadFaces(ctx)
 		}
 		seen := make(map[string]struct{})
 		directoryScopes := make(map[string][]string)
@@ -177,7 +226,7 @@ func (a *appState) refresh() {
 			if ctx.Err() != nil {
 				break
 			}
-			faces, err := readFaces(path)
+			faces, err := reader.read(reader.lookup(path))
 			if err != nil {
 				report(fmt.Sprintf("%s: %v", path, err))
 				continue
@@ -196,7 +245,7 @@ func (a *appState) refresh() {
 			if _, err := os.Stat(root); err != nil {
 				continue
 			}
-			_ = fonts.Scan(ctx, root, readFaces, func(path string) {
+			_ = reader.scan(ctx, root, func(path string) {
 				if path == root {
 					return
 				}
@@ -209,7 +258,7 @@ func (a *appState) refresh() {
 			})
 			flush()
 		}
-		flushCache()
+		reader.flush()
 		a.window.Update(func() {
 			if current == a.scanID {
 				if ctx.Err() == nil {

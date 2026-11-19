@@ -516,17 +516,28 @@ func readCmap(data []byte) (codepoints.Set, string, error) {
 	return nil, "未提供", nil
 }
 
-func Scan(ctx context.Context, root string, read func(string) ([]Entry, error), directory func(string), visit func(Entry), report func(string, error)) error {
-	return filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+func WalkFiles(ctx context.Context, root string, files func([]string), directory func(string), report func(string, error)) error {
+	paths := make([]string, 0, 8)
+	flush := func() {
+		if len(paths) > 0 && ctx.Err() == nil {
+			files(paths)
+			paths = paths[:0]
+		}
+	}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err != nil {
-			report(path, err)
-			return nil
-		}
-		if entry.IsDir() {
-			directory(path)
+		if err != nil || entry.IsDir() {
+			flush()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err != nil {
+				report(path, err)
+			} else {
+				directory(path)
+			}
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
@@ -536,14 +547,15 @@ func Scan(ctx context.Context, root string, read func(string) ([]Entry, error), 
 		if ext != ".ttf" && ext != ".otf" && ext != ".ttc" && ext != ".otc" && ext != ".woff" && ext != ".woff2" {
 			return nil
 		}
-		faces, readErr := read(path)
-		if readErr != nil {
-			report(path, readErr)
-			return nil
-		}
-		for _, face := range faces {
-			visit(face)
+		paths = append(paths, path)
+		if len(paths) == cap(paths) {
+			flush()
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	flush()
+	return ctx.Err()
 }
