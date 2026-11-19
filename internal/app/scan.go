@@ -34,7 +34,7 @@ func (reader *scanReader) lookup(path string) faceLookup {
 	record := store.FaceRecord{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano()}
 	var hit bool
 	if reader.cache != nil {
-		record.Faces, hit = reader.cache.Faces(path, record.Size, record.Modified)
+		hit = reader.cache.Lookup(&record)
 	} else if reader.store != nil {
 		record.Faces, hit = reader.store.Faces(path, record.Size, record.Modified)
 	}
@@ -43,21 +43,26 @@ func (reader *scanReader) lookup(path string) faceLookup {
 
 func (reader *scanReader) read(lookup faceLookup) ([]fonts.Entry, error) {
 	record := lookup.record
-	if lookup.err != nil || lookup.hit {
+	if lookup.err != nil || (lookup.hit && !record.Upgrade) {
 		return record.Faces, lookup.err
 	}
-	faces, err := fonts.ReadIndex(record.Path)
-	if err == nil && reader.store != nil {
+	if !lookup.hit {
+		faces, err := fonts.ReadIndex(record.Path)
+		if err != nil {
+			return nil, err
+		}
 		record.Faces = faces
 		if len(faces) > 0 {
 			record.Size, record.Modified = faces[0].Size, faces[0].Modified
 		}
+	}
+	if reader.store != nil {
 		reader.pending = append(reader.pending, record)
 		if len(reader.pending) >= 128 {
 			reader.flush()
 		}
 	}
-	return faces, err
+	return record.Faces, nil
 }
 
 func (reader *scanReader) flush() {

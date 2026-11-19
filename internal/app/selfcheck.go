@@ -2,8 +2,10 @@ package app
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"image"
@@ -594,6 +596,9 @@ func checkStore(path string, faces []fonts.Face) error {
 		return err
 	}
 	defer checkDB.Close()
+	if err := checkLegacyFaceCache(checkDB, cache, entries[0]); err != nil {
+		return err
+	}
 	if _, err := checkDB.Exec(`CREATE TRIGGER reject_batch BEFORE INSERT ON faces
 		WHEN NEW.path='reject-batch' BEGIN SELECT RAISE(ABORT, 'batch rollback check'); END`); err != nil {
 		return err
@@ -627,6 +632,41 @@ func checkStore(path string, faces []fonts.Face) error {
 	close(failures)
 	for err := range failures {
 		return err
+	}
+	return nil
+}
+
+func checkLegacyFaceCache(db *sql.DB, cache *store.Store, entry fonts.Entry) error {
+	entry.Path += ".v10"
+	faces := []fonts.Entry{entry}
+	var payload bytes.Buffer
+	writer := gzip.NewWriter(&payload)
+	if err := gob.NewEncoder(writer).Encode(faces); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`INSERT INTO faces(path,size,modified,version,payload) VALUES(?,?,?,10,?)`, entry.Path, entry.Size, entry.Modified, payload.Bytes()); err != nil {
+		return err
+	}
+	snapshot, err := cache.LoadFaces(context.Background())
+	if err != nil {
+		return err
+	}
+	record := store.FaceRecord{Path: entry.Path, Size: entry.Size, Modified: entry.Modified}
+	if !snapshot.Lookup(&record) || !record.Upgrade || !slices.Equal(record.Faces, faces) {
+		return fmt.Errorf("v10 font index lookup mismatch")
+	}
+	if err := cache.SaveFacesBatch(context.Background(), []store.FaceRecord{record}); err != nil {
+		return err
+	}
+	var version int
+	if err := db.QueryRow(`SELECT version FROM faces WHERE path=?`, entry.Path).Scan(&version); err != nil {
+		return err
+	}
+	if loaded, ok := cache.Faces(entry.Path, entry.Size, entry.Modified); version != 11 || !ok || !slices.Equal(loaded, faces) {
+		return fmt.Errorf("v10 font index upgrade mismatch")
 	}
 	return nil
 }
