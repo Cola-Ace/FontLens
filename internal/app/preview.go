@@ -105,13 +105,18 @@ func (a *appState) previewCache(key previewKey) *bitmapCache {
 }
 
 func (a *appState) compareView(c *ui.Context) {
+	const outerPadding, gap, cardPadding, border = 20, 16, 16, 1
 	faces := make([]fonts.Entry, 0, len(a.compareIDs))
 	for _, id := range a.compareIDs {
 		if index, exists := a.faceIndex[id]; exists {
 			faces = append(faces, a.faces[index])
 		}
 	}
-	ui.Column(c).Fill().Padding(20).Gap(12).Children(func() {
+	width, _ := c.Size()
+	columns := max(1, min(2, len(faces)))
+	cardWidth := (width - 2*outerPadding - float32(columns-1)*gap) / float32(columns)
+	previewWidth := max(1, int(cardWidth-2*(cardPadding+border)))
+	ui.Column(c).Fill().Padding(outerPadding).Gap(12).Children(func() {
 		ui.Row(c).Gap(12).Children(func() {
 			if ui.Button(c, "返回浏览").Clicked() {
 				a.comparePage = false
@@ -119,13 +124,13 @@ func (a *appState) compareView(c *ui.Context) {
 			ui.Textf(c, "字体对比 · %d 款", len(faces)).FontSize(22).Bold()
 		})
 		a.previewToolbar(c)
-		a.syncPreviews(c, faces, a.previewText, a.previewSize*1.5, 450, 240)
-		ui.Scroll(c).Grow(1).Children(func() {
-			for start := 0; start < len(faces); start += 2 {
-				end := min(start+2, len(faces))
-				ui.Row(c).Gap(16).Children(func() {
+		a.syncPreviews(c, faces, a.previewText, a.previewSize, previewWidth, 0)
+		ui.Scroll(c).Grow(1).Gap(gap).Children(func() {
+			for start := 0; start < len(faces); start += columns {
+				end := min(start+columns, len(faces))
+				ui.Row(c).Gap(gap).AlignItems(ui.Stretch).Children(func() {
 					for _, face := range faces[start:end] {
-						ui.Column(c).Grow(1).Padding(16).Gap(8).Children(func() {
+						ui.Column(c).Width(cardWidth).Padding(cardPadding).Gap(8).Children(func() {
 							ui.Row(c).Gap(8).Children(func() {
 								ui.Text(c, face.FullName).FontSize(18).Bold().Grow(1)
 								if ui.Button(c, "移除").Clicked() {
@@ -133,8 +138,8 @@ func (a *appState) compareView(c *ui.Context) {
 								}
 							})
 							ui.Textf(c, "%s · 面 %d", face.Path, face.Index+1).SingleLine().TextColor(c.Theme().TextMuted)
-							a.previewView(c, face, a.previewSize*1.5, 450, 240)
-						}).Border(1, c.Theme().Border).Radius(8)
+							a.previewView(c, face, a.previewSize, previewWidth, 0)
+						}).Border(border, c.Theme().Border).Radius(8)
 					}
 				})
 			}
@@ -214,7 +219,14 @@ func (a *appState) previewKey(face fonts.Entry, sample string, size float32, wid
 	for _, tag := range tags {
 		settings += fmt.Sprintf(":%s=%.3f", tag, axes[tag])
 	}
-	return previewKey{slot: previewSlotFor(face, width, height), settings: settings}
+	view := "list"
+	if width > 0 {
+		view = "details"
+		if a.comparePage {
+			view = "compare"
+		}
+	}
+	return previewKey{slot: previewSlot{font: face.ID(), size: face.Size, modified: face.Modified, view: view}, settings: settings}
 }
 
 func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, width, height int, scale float32) previewKey {
@@ -350,17 +362,6 @@ func (a *appState) syncPreview(c *ui.Context, face fonts.Entry, sample string, s
 
 func (a *appState) previewView(c *ui.Context, face fonts.Entry, size float32, width, height int) {
 	a.previewTextView(c, face, a.previewText, size, width, height)
-}
-
-func previewSlotFor(face fonts.Entry, width, height int) previewSlot {
-	view := "list"
-	if width > 0 {
-		view = "compare"
-		if height == 0 {
-			view = "details"
-		}
-	}
-	return previewSlot{font: face.ID(), size: face.Size, modified: face.Modified, view: view}
 }
 
 func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) ui.Element {

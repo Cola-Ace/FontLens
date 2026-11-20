@@ -275,6 +275,12 @@ func checkPreviewCache() error {
 	entry := fonts.Entry{Path: "cached-preview.ttf", Family: "Cached"}
 	key := app.previewKey(entry, entry.Family, 28, 0, 44, 1)
 	sample := app.previewKey(entry, "sample", 28, 260, 52, 1)
+	app.comparePage = true
+	compare := app.previewKey(entry, "sample", 28, 260, 0, 1)
+	app.comparePage = false
+	if compare.slot == app.previewKey(entry, "sample", 28, 260, 0, 1).slot {
+		return fmt.Errorf("comparison and detail previews share a display slot")
+	}
 	bitmap := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 256, 44)))
 	app.samplePreviews.put(sample, bitmap)
 	app.familyPreviews.put(key, bitmap)
