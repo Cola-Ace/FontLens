@@ -26,8 +26,8 @@ const (
 )
 
 type previewSlot struct {
-	font string
-	view string
+	font, view     string
+	size, modified int64
 }
 
 type previewKey struct {
@@ -297,32 +297,31 @@ func (a *appState) cancelPreviews(wanted map[previewKey]bool) {
 }
 
 func (a *appState) pruneFamilyPreviews() {
-	if len(a.familyPreviews.recent) == 0 && len(a.previewLast) == 0 && len(a.previewLoading) == 0 && len(a.previewErrors) == 0 {
-		return
-	}
-	retained := make(map[string]bool, len(a.rows))
-	for _, face := range a.rows {
-		if face.Family != "" {
-			retained[coverageKey(face)] = true
+	retained := func(slot previewSlot) bool {
+		index, ok := a.faceIndex[slot.font]
+		if !ok {
+			return false
 		}
+		entry := &a.browserEntries[index]
+		return entry.inResults && entry.face.Family != "" && entry.face.Size == slot.size && entry.face.Modified == slot.modified
 	}
 	for key, item := range a.familyPreviews.recent {
-		if !retained[key.slot.font] {
+		if !retained(key.slot) {
 			a.familyPreviews.remove(item)
 		}
 	}
 	for slot := range a.previewLast {
-		if slot.view == "list" && !retained[slot.font] {
+		if slot.view == "list" && !retained(slot) {
 			delete(a.previewLast, slot)
 		}
 	}
 	for key, request := range a.previewLoading {
-		if key.slot.view == "list" && !retained[key.slot.font] {
+		if key.slot.view == "list" && !retained(key.slot) {
 			a.cancelPreview(key, request)
 		}
 	}
 	for key := range a.previewErrors {
-		if key.slot.view == "list" && !retained[key.slot.font] {
+		if key.slot.view == "list" && !retained(key.slot) {
 			delete(a.previewErrors, key)
 		}
 	}
@@ -361,7 +360,7 @@ func previewSlotFor(face fonts.Entry, width, height int) previewSlot {
 			view = "details"
 		}
 	}
-	return previewSlot{font: coverageKey(face), view: view}
+	return previewSlot{font: face.ID(), size: face.Size, modified: face.Modified, view: view}
 }
 
 func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) ui.Element {

@@ -43,6 +43,7 @@ type browserEntry struct {
 	face          fonts.Entry
 	id, name, key string
 	order         []byte
+	inResults     bool
 }
 
 func (a *appState) rebuild() {
@@ -65,11 +66,13 @@ func (a *appState) rebuild() {
 				entry.key = entry.id
 			}
 		}
+		entry.inResults = false
 		if (a.format == "" || face.Format == a.format) && strings.Contains(entry.name, query) && a.inScope(entry) {
 			if _, exists := seen[entry.key]; exists {
 				continue
 			}
 			seen[entry.key] = struct{}{}
+			entry.inResults = true
 			if a.sortMode != 0 && entry.order == nil {
 				if nameOrder == nil {
 					nameOrder = collate.New(language.Chinese, collate.IgnoreCase, collate.Numeric)

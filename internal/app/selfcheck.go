@@ -303,7 +303,14 @@ func checkPreviewCache() error {
 	defer cancel()
 	app.previewLoading[pending] = &previewRequest{cancel: cancel}
 	app.previewErrors = map[previewKey]string{key: "old error"}
-	app.rows = []fonts.Entry{updated}
+	updated.FullName = "Cached"
+	duplicate := updated
+	duplicate.Path = "duplicate.ttf"
+	app.familyPreviews.put(app.previewKey(duplicate, duplicate.Family, 28, 0, 44, 1), bitmap)
+	app.scope = "all"
+	app.faces = []fonts.Entry{updated, duplicate}
+	app.faceIndex = map[string]int{updated.ID(): 0, duplicate.ID(): 1}
+	app.rebuild()
 	app.pruneFamilyPreviews()
 	if len(app.familyPreviews.recent) != 1 || app.familyPreviews.order.Len() != 1 || app.familyPreviews.bytes != 256*44*4 ||
 		app.familyPreviews.bitmap(updatedKey) != bitmap || app.previewLast[key.slot].bitmap != nil || app.previewLast[updatedKey.slot] != last ||
