@@ -28,9 +28,13 @@ func (a *appState) treeChildren(node string) []string {
 }
 
 func (a *appState) sidebar(c *ui.Context) {
-	ui.Column(c).Fill().Padding(8, 12, 8, 4).Gap(12).Children(func() {
+	ui.Column(c).Fill().Padding(8, 12).Gap(12).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(4).Children(func() {
-			ui.Text(c, "字体目录").TextColor(c.Theme().TextMuted).Grow(1)
+			titleColor := ui.Hex("#000000")
+			if c.Theme().Dark {
+				titleColor = ui.Hex("#ffffff")
+			}
+			ui.Text(c, "字体目录").TextColor(titleColor).Grow(1)
 			if ui.Button(c, "添加文件夹").Clicked() {
 				a.chooseFolder()
 			}
@@ -147,7 +151,7 @@ func (a *appState) sidebar(c *ui.Context) {
 					}
 				})
 			}
-		}).Grow(1).PaddingEnd(trackWidth).Changed() {
+		}).Grow(1).MarginStart(-8).PaddingEnd(trackWidth).Changed() {
 			a.scope = a.tree.Item(a.treeRow)
 			a.rebuild()
 			a.pruneFamilyPreviews()
