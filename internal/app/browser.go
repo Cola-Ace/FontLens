@@ -213,16 +213,23 @@ func (a *appState) browser(c *ui.Context, width float32) {
 			if ui.Button(c, fmt.Sprintf("对比 (%d)", len(a.compareIDs))).Clicked() && len(a.compareIDs) >= 2 {
 				a.comparePage = true
 			}
-			formats := []string{"", "TTF", "OTF", "TTC", "OTC", "WOFF", "WOFF2"}
 			filterLabel := "全部格式"
 			if a.format != "" {
 				filterLabel = a.format
 			}
-			if ui.Button(c, filterLabel).Clicked() {
-				index := slices.Index(formats, a.format)
-				a.format = formats[(index+1)%len(formats)]
-				a.rebuild()
-			}
+			ui.MenuButton(c, filterLabel, func(menu *ui.Menu) {
+				for _, format := range []string{"", "TTF", "OTF", "TTC", "OTC", "WOFF", "WOFF2"} {
+					label := format
+					if label == "" {
+						label = "全部格式"
+					}
+					if menu.Item(label).Checked(a.format == format).Chosen() && a.format != format {
+						a.format = format
+						a.rebuild()
+						a.table.ScrollTo(0, ui.Start)
+					}
+				}
+			})
 		})
 		if a.compareLimit {
 			ui.Text(c, "最多选择 4 款字体进行对比").TextColor(c.Theme().TextMuted)
