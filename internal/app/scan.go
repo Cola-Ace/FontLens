@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -130,8 +131,12 @@ func (a *appState) refresh() {
 	}
 	a.dirs = make(map[string][]string)
 	a.errors = nil
-	a.systemIDs = make(map[string]bool)
-	counts := a.recount()
+	if a.systemIDs == nil {
+		a.systemIDs = make(map[string]bool)
+	}
+	if a.scopeCounts == nil {
+		a.scopeCounts = make(map[string]int)
+	}
 	roots := slices.Clone(a.sources)
 	go func() {
 		reader := scanReader{store: a.store}
@@ -139,7 +144,8 @@ func (a *appState) refresh() {
 			reader.cache, _ = a.store.LoadFaces(ctx)
 		}
 		seen := make(map[string]struct{})
-		recountNeeded := false
+		counts := newScopeCounter()
+		systemIDs := make(map[string]bool)
 		type scanFace struct {
 			face   fonts.Entry
 			id     string
@@ -154,31 +160,27 @@ func (a *appState) refresh() {
 				return
 			}
 			ready, dirs, errors := batch, directories, messages
+			totals := maps.Clone(counts.totals)
 			done := make(chan struct{})
 			a.window.Update(func() {
 				defer close(done)
 				if current != a.scanID || ctx.Err() != nil {
 					return
 				}
+				for scope, total := range totals {
+					a.scopeCounts[scope] = max(a.scopeCounts[scope], total)
+				}
 				for _, item := range ready {
 					face, id := item.face, item.id
 					index, exists := a.faceIndex[id]
 					if item.system {
 						a.systemIDs[id] = true
-						if exists {
-							counts.addName("system", fontNameKey(face))
-						}
 					}
 					if exists {
-						previous := a.faces[index]
-						if previous.FullName != face.FullName || previous.Path != face.Path {
-							recountNeeded = true
-						}
 						a.faces[index] = face
 					} else {
 						a.faceIndex[id] = len(a.faces)
 						a.faces = append(a.faces, face)
-						counts.add(face, item.system, roots)
 					}
 				}
 				for _, path := range dirs {
@@ -213,6 +215,10 @@ func (a *appState) refresh() {
 				return
 			}
 			seen[id] = struct{}{}
+			counts.add(face, system, roots)
+			if system {
+				systemIDs[id] = true
+			}
 			batch = append(batch, scanFace{face: face, id: id, system: system})
 			flushIfReady()
 		}
@@ -282,9 +288,10 @@ func (a *appState) refresh() {
 					for index, face := range a.faces {
 						a.faceIndex[face.ID()] = index
 					}
-					recountNeeded = true
 				}
 				if ctx.Err() == nil {
+					a.systemIDs = systemIDs
+					a.scopeCounts = counts.totals
 					a.compareIDs = slices.DeleteFunc(a.compareIDs, func(id string) bool {
 						_, exists := a.faceIndex[id]
 						return !exists
@@ -292,8 +299,7 @@ func (a *appState) refresh() {
 					if len(a.compareIDs) < 4 {
 						a.compareLimit = false
 					}
-				}
-				if recountNeeded {
+				} else {
 					a.recount()
 				}
 				a.scanning = false

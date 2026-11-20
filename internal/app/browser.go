@@ -123,17 +123,20 @@ type scopeCounter struct {
 	directories map[string][]string
 }
 
-func (a *appState) recount() *scopeCounter {
-	counter := &scopeCounter{
+func newScopeCounter() *scopeCounter {
+	return &scopeCounter{
 		totals:      make(map[string]int),
 		names:       make(map[string]map[string]struct{}),
 		directories: make(map[string][]string),
 	}
-	a.scopeCounts = counter.totals
+}
+
+func (a *appState) recount() {
+	counter := newScopeCounter()
 	for _, face := range a.faces {
 		counter.add(face, a.systemIDs[face.ID()], a.sources)
 	}
-	return counter
+	a.scopeCounts = counter.totals
 }
 
 func (counter *scopeCounter) add(face fonts.Entry, system bool, sources []string) {
