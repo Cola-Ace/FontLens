@@ -83,7 +83,7 @@ func (a *appState) sidebar(c *ui.Context) {
 					rowHeight = 42
 				}
 			}
-			row := ui.Row(c).Grow(1).MinWidth(0).Height(rowHeight).PaddingEnd(6).Gap(4).AlignItems(ui.Center).Children(func() {
+			row := ui.Row(c).Grow(1).MinWidth(0).Height(rowHeight).PaddingEnd(4).Gap(4).AlignItems(ui.Center).Children(func() {
 				if icon != "" {
 					ui.Text(c, icon).Font("Segoe MDL2 Assets").FontSize(13).Width(16).Shrink(0)
 				} else {
@@ -151,7 +151,7 @@ func (a *appState) sidebar(c *ui.Context) {
 					}
 				})
 			}
-		}).Grow(1).MarginStart(-8).PaddingEnd(trackWidth).Changed() {
+		}).Grow(1).MarginX(-8).PaddingEnd(trackWidth).Changed() {
 			a.scope = a.tree.Item(a.treeRow)
 			a.rebuild()
 			a.pruneFamilyPreviews()
