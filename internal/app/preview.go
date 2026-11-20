@@ -48,12 +48,13 @@ type bitmapCache struct {
 }
 
 type cachedBitmap struct {
-	key    previewKey
-	bitmap *ui.Bitmap
-	bytes  int64
+	key              previewKey
+	bitmap           *ui.Bitmap
+	bytes            int64
+	allGlyphsMissing bool
 }
 
-func (cache *bitmapCache) put(key previewKey, bitmap *ui.Bitmap) {
+func (cache *bitmapCache) put(key previewKey, bitmap *ui.Bitmap, allGlyphsMissing bool) {
 	if cache.recent == nil {
 		cache.recent = make(map[previewKey]*list.Element)
 	}
@@ -61,7 +62,7 @@ func (cache *bitmapCache) put(key previewKey, bitmap *ui.Bitmap) {
 		cache.remove(previous)
 	}
 	width, height := bitmap.Size()
-	entry := cachedBitmap{key: key, bitmap: bitmap, bytes: int64(width) * int64(height) * 4}
+	entry := cachedBitmap{key: key, bitmap: bitmap, bytes: int64(width) * int64(height) * 4, allGlyphsMissing: allGlyphsMissing}
 	cache.recent[key] = cache.order.PushFront(entry)
 	cache.bytes += entry.bytes
 }
@@ -270,7 +271,7 @@ func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, 
 				a.previewErrors[key] = err.Error()
 				return
 			}
-			cache.put(key, ui.NewBitmap(bitmap))
+			cache.put(key, ui.NewBitmap(bitmap.RGBA), bitmap.AllGlyphsMissing)
 		})
 	}()
 	return key
@@ -373,8 +374,14 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 	a.previewSlots[slot] = true
 	request := a.previewLoading[key]
 	loading := request != nil && request.hint.show()
-	if bitmap := cache.bitmap(key); bitmap != nil {
+	if item := cache.recent[key]; item != nil {
 		cache.touch(key)
+		entry := item.Value.(cachedBitmap)
+		if width > 0 && entry.allGlyphsMissing {
+			delete(a.previewLast, slot)
+			return ui.Text(c, "当前字体不含这段文字的字形").TextColor(c.Theme().TextMuted)
+		}
+		bitmap := entry.bitmap
 		frame := displayedPreview{bitmap: bitmap, width: float32(width), height: float32(height)}
 		if width == 0 {
 			pixelWidth, _ := ui.ImageSize(bitmap)

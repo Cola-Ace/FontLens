@@ -251,7 +251,7 @@ func checkPreviewCache() error {
 	recent := previewKey{settings: "recent"}
 	newest := previewKey{settings: "new"}
 	for _, key := range []previewKey{old, recent, newest} {
-		cache.put(key, ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 2, 2))))
+		cache.put(key, ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 2, 2))), false)
 	}
 	cache.touch(old)
 	cache.trim(nil, nil, 32)
@@ -262,7 +262,7 @@ func checkPreviewCache() error {
 	if len(cache.recent) != 2 || cache.bytes != 32 {
 		return fmt.Errorf("preview cache evicted displayed or fallback bitmap")
 	}
-	cache.put(old, ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 1, 1))))
+	cache.put(old, ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 1, 1))), false)
 	if cache.bytes != 20 || cache.order.Len() != 2 {
 		return fmt.Errorf("preview cache replacement accounting mismatch")
 	}
@@ -282,26 +282,26 @@ func checkPreviewCache() error {
 		return fmt.Errorf("comparison and detail previews share a display slot")
 	}
 	bitmap := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 256, 44)))
-	app.samplePreviews.put(sample, bitmap)
-	app.familyPreviews.put(key, bitmap)
+	app.samplePreviews.put(sample, bitmap, false)
+	app.familyPreviews.put(key, bitmap, false)
 	app.cancelPreviews(nil)
 	if app.familyPreviews.bitmap(key) != bitmap || app.ensurePreview(entry, entry.Family, 28, 0, 44, 1) != key || len(app.previewLoading) != 0 {
 		return fmt.Errorf("recent preview was rendered again after leaving the viewport")
 	}
 	for index := range 928 {
 		face := fonts.Entry{Path: fmt.Sprintf("font-%d.ttf", index), Family: "Font"}
-		app.familyPreviews.put(app.previewKey(face, face.Family, 28, 0, 44, 1), bitmap)
+		app.familyPreviews.put(app.previewKey(face, face.Family, 28, 0, 44, 1), bitmap, false)
 		app.cancelPreviews(nil)
 	}
 	if app.familyPreviews.bytes > familyPreviewBudget || app.familyPreviews.bitmap(key) != nil || app.samplePreviews.bitmap(sample) != bitmap {
 		return fmt.Errorf("family preview cache exceeded its own budget")
 	}
 
-	app.familyPreviews.put(key, bitmap)
+	app.familyPreviews.put(key, bitmap, false)
 	updated := entry
 	updated.Modified++
 	updatedKey := app.previewKey(updated, updated.Family, 28, 0, 44, 1)
-	app.familyPreviews.put(updatedKey, bitmap)
+	app.familyPreviews.put(updatedKey, bitmap, false)
 	last := displayedPreview{bitmap: bitmap, width: 256, height: 44}
 	app.previewLast = map[previewSlot]displayedPreview{key.slot: last, updatedKey.slot: last, sample.slot: last}
 	pending := app.previewKey(entry, entry.Family, 30, 0, 44, 1)
@@ -312,7 +312,7 @@ func checkPreviewCache() error {
 	updated.FullName = "Cached"
 	duplicate := updated
 	duplicate.Path = "duplicate.ttf"
-	app.familyPreviews.put(app.previewKey(duplicate, duplicate.Family, 28, 0, 44, 1), bitmap)
+	app.familyPreviews.put(app.previewKey(duplicate, duplicate.Family, 28, 0, 44, 1), bitmap, false)
 	app.scope = "all"
 	app.faces = []fonts.Entry{updated, duplicate}
 	app.faceIndex = map[string]int{updated.ID(): 0, duplicate.ID(): 1}
@@ -406,6 +406,9 @@ func checkFont(path, sample string) error {
 		if err != nil {
 			return fmt.Errorf("missing-glyph preview: %w", err)
 		}
+		if !blank.AllGlyphsMissing {
+			return fmt.Errorf("missing-glyph status absent")
+		}
 		for pixel := 3; pixel < len(blank.Pix); pixel += 4 {
 			if blank.Pix[pixel] != 0 {
 				return fmt.Errorf("missing glyphs were drawn instead of left blank")
@@ -415,9 +418,13 @@ func checkFont(path, sample string) error {
 		if err != nil {
 			return fmt.Errorf("mixed missing-glyph preview: %w", err)
 		}
-		if !bytes.Equal(bitmap.Pix, mixed.Pix) {
+		if mixed.AllGlyphsMissing != bitmap.AllGlyphsMissing || !bytes.Equal(bitmap.Pix, mixed.Pix) {
 			return fmt.Errorf("missing glyphs changed the supported preview text")
 		}
+	}
+	spaces, err := preview.Render(context.Background(), path, 0, nil, " \t", 28, 1.4, 260, 52, 1, color.RGBA{A: 255})
+	if err != nil || spaces.AllGlyphsMissing {
+		return fmt.Errorf("whitespace preview status mismatch: %v", err)
 	}
 	for _, scale := range []float32{1, 1.25, 1.5, 2} {
 		short, err := preview.Render(context.Background(), path, 0, nil, "A", 28, 1.4, 260, 0, scale, color.RGBA{A: 255})
@@ -436,7 +443,7 @@ func checkFont(path, sample string) error {
 		if short.Rect.Dy() <= 0 || tall.Rect.Dy() <= short.Rect.Dy() || wide.Rect.Dy() >= tall.Rect.Dy() || tall.Rect.Dx() != int(math.Ceil(float64(260*scale))) {
 			return fmt.Errorf("auto-height preview at %g× did not adapt to text and width", scale)
 		}
-		for _, centered := range []*image.RGBA{short, tall, wide} {
+		for _, centered := range []*preview.Result{short, tall, wide} {
 			top, bottom := centered.Rect.Dy(), -1
 			for y := 0; y < centered.Rect.Dy(); y++ {
 				for x := 0; x < centered.Rect.Dx(); x++ {

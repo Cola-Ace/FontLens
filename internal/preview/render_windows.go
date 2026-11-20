@@ -29,9 +29,14 @@ var renderSlots = make(chan struct{}, 2)
 
 const maxPreviewBitmapBytes = 8 << 20
 
+type Result struct {
+	*image.RGBA
+	AllGlyphsMissing bool
+}
+
 // A zero width renders a complete single line at its natural width.
 // A zero height with a positive width fits the wrapped text's height.
-func Render(ctx context.Context, path string, faceIndex int, axes map[string]float32, sample string, size, lineHeight float32, width, height int, scale float32, ink color.RGBA) (*image.RGBA, error) {
+func Render(ctx context.Context, path string, faceIndex int, axes map[string]float32, sample string, size, lineHeight float32, width, height int, scale float32, ink color.RGBA) (*Result, error) {
 	if width < 0 || height < 0 || width == 0 && height == 0 || size <= 0 || scale <= 0 {
 		return nil, fmt.Errorf("invalid preview dimensions")
 	}
@@ -261,7 +266,11 @@ func Render(ctx context.Context, path string, faceIndex int, axes map[string]flo
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return drawLayout(ctx, layout, missing, width, height, originY, scale, ink)
+	bitmap, err := drawLayout(ctx, layout, missing, width, height, originY, scale, ink)
+	if err != nil {
+		return nil, err
+	}
+	return &Result{RGBA: bitmap, AllGlyphsMissing: len(missing) > 0 && len(missing) == len(codepoints)}, nil
 }
 
 func drawLayout(ctx context.Context, layout *directwrite.IDWriteTextLayout, missing []directwrite.DWRITE_TEXT_RANGE, width, height int, originY, scale float32, ink color.RGBA) (*image.RGBA, error) {
