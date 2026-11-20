@@ -3,35 +3,106 @@ package app
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"fontlens/internal/fonts"
 	"fontlens/internal/store"
 )
 
-func (a *appState) readFaces(path string, cached *store.FaceCache, pending *[]store.FaceRecord) ([]fonts.Entry, error) {
+type scanReader struct {
+	store   *store.Store
+	cache   *store.FaceCache
+	pending []store.FaceRecord
+}
+
+type faceLookup struct {
+	record store.FaceRecord
+	hit    bool
+	err    error
+}
+
+func (reader *scanReader) lookup(path string) faceLookup {
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, err
+		return faceLookup{err: err}
 	}
-	if cached != nil {
-		if faces, found := cached.Faces(path, info.Size(), info.ModTime().UnixNano()); found {
-			return faces, nil
+	record := store.FaceRecord{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano()}
+	var hit bool
+	if reader.cache != nil {
+		hit = reader.cache.Lookup(&record)
+	} else if reader.store != nil {
+		record.Faces, hit = reader.store.Faces(path, record.Size, record.Modified)
+	}
+	return faceLookup{record: record, hit: hit}
+}
+
+func (reader *scanReader) read(lookup faceLookup) ([]fonts.Entry, error) {
+	record := lookup.record
+	if lookup.err != nil || (lookup.hit && !record.Upgrade) {
+		return record.Faces, lookup.err
+	}
+	if !lookup.hit {
+		faces, err := fonts.ReadIndex(record.Path)
+		if err != nil {
+			return nil, err
 		}
-	} else if a.store != nil {
-		if faces, found := a.store.Faces(path, info.Size(), info.ModTime().UnixNano()); found {
-			return faces, nil
+		record.Faces = faces
+		if len(faces) > 0 {
+			record.Size, record.Modified = faces[0].Size, faces[0].Modified
 		}
 	}
-	faces, err := fonts.ReadIndex(path)
-	if err == nil && a.store != nil {
-		*pending = append(*pending, store.FaceRecord{Path: path, Size: info.Size(), Modified: info.ModTime().UnixNano(), Faces: faces})
+	if reader.store != nil {
+		reader.pending = append(reader.pending, record)
+		if len(reader.pending) >= 128 {
+			reader.flush()
+		}
 	}
-	return faces, err
+	return record.Faces, nil
+}
+
+func (reader *scanReader) flush() {
+	if len(reader.pending) > 0 {
+		_ = reader.store.SaveFacesBatch(context.Background(), reader.pending)
+		clear(reader.pending)
+		reader.pending = reader.pending[:0]
+	}
+}
+
+func (reader *scanReader) scan(ctx context.Context, root string, directory func(string), visit func(fonts.Entry), report func(string, error)) error {
+	return fonts.WalkFiles(ctx, root, func(paths []string) {
+		results := make([]faceLookup, len(paths))
+		lookup := func(start int) {
+			for index := start; index < len(paths) && ctx.Err() == nil; index += 2 {
+				results[index] = reader.lookup(paths[index])
+			}
+		}
+		var workers sync.WaitGroup
+		if len(paths) > 1 {
+			workers.Go(func() { lookup(1) })
+		}
+		lookup(0)
+		workers.Wait()
+		for index, result := range results {
+			if ctx.Err() != nil {
+				return
+			}
+			faces, err := reader.read(result)
+			if err != nil {
+				report(paths[index], err)
+				continue
+			}
+			for _, face := range faces {
+				visit(face)
+			}
+		}
+	}, directory, report)
 }
 
 func systemSources() []string {
@@ -60,32 +131,24 @@ func (a *appState) refresh() {
 	}
 	a.dirs = make(map[string][]string)
 	a.errors = nil
-	a.systemIDs = make(map[string]bool)
-	a.recount()
+	if a.systemIDs == nil {
+		a.systemIDs = make(map[string]bool)
+	}
+	if a.scopeCounts == nil {
+		a.scopeCounts = make(map[string]int)
+	}
 	roots := slices.Clone(a.sources)
 	go func() {
-		var cached *store.FaceCache
+		reader := scanReader{store: a.store}
 		if a.store != nil {
-			cached, _ = a.store.LoadFaces(ctx)
-		}
-		pending := make([]store.FaceRecord, 0, 128)
-		flushCache := func() {
-			if len(pending) > 0 {
-				_ = a.store.SaveFacesBatch(context.Background(), pending)
-				clear(pending)
-				pending = pending[:0]
-			}
-		}
-		readFaces := func(path string) ([]fonts.Entry, error) {
-			faces, err := a.readFaces(path, cached, &pending)
-			if len(pending) >= cap(pending) {
-				flushCache()
-			}
-			return faces, err
+			reader.cache, _ = a.store.LoadFaces(ctx)
 		}
 		seen := make(map[string]struct{})
+		counts := newScopeCounter()
+		systemIDs := make(map[string]bool)
 		type scanFace struct {
 			face   fonts.Entry
+			id     string
 			system bool
 		}
 		batch := make([]scanFace, 0, 512)
@@ -97,26 +160,27 @@ func (a *appState) refresh() {
 				return
 			}
 			ready, dirs, errors := batch, directories, messages
+			totals := maps.Clone(counts.totals)
 			done := make(chan struct{})
 			a.window.Update(func() {
 				defer close(done)
 				if current != a.scanID || ctx.Err() != nil {
 					return
 				}
+				for scope, total := range totals {
+					a.scopeCounts[scope] = max(a.scopeCounts[scope], total)
+				}
 				for _, item := range ready {
-					face := item.face
-					if item.system && !a.systemIDs[face.ID()] {
-						a.systemIDs[face.ID()] = true
-						if _, exists := a.faceIndex[face.ID()]; exists {
-							a.addScopeCount("system", fontNameKey(face))
-						}
+					face, id := item.face, item.id
+					index, exists := a.faceIndex[id]
+					if item.system {
+						a.systemIDs[id] = true
 					}
-					if index, exists := a.faceIndex[face.ID()]; exists {
+					if exists {
 						a.faces[index] = face
 					} else {
-						a.faceIndex[face.ID()] = len(a.faces)
+						a.faceIndex[id] = len(a.faces)
 						a.faces = append(a.faces, face)
-						a.addCount(face)
 					}
 				}
 				for _, path := range dirs {
@@ -151,7 +215,11 @@ func (a *appState) refresh() {
 				return
 			}
 			seen[id] = struct{}{}
-			batch = append(batch, scanFace{face: face, system: system})
+			counts.add(face, system, roots)
+			if system {
+				systemIDs[id] = true
+			}
+			batch = append(batch, scanFace{face: face, id: id, system: system})
 			flushIfReady()
 		}
 		report := func(message string) {
@@ -176,7 +244,7 @@ func (a *appState) refresh() {
 			if ctx.Err() != nil {
 				break
 			}
-			faces, err := readFaces(path)
+			faces, err := reader.read(reader.lookup(path))
 			if err != nil {
 				report(fmt.Sprintf("%s: %v", path, err))
 				continue
@@ -195,7 +263,7 @@ func (a *appState) refresh() {
 			if _, err := os.Stat(root); err != nil {
 				continue
 			}
-			_ = fonts.Scan(ctx, root, readFaces, func(path string) {
+			_ = reader.scan(ctx, root, func(path string) {
 				if path == root {
 					return
 				}
@@ -208,10 +276,10 @@ func (a *appState) refresh() {
 			})
 			flush()
 		}
-		flushCache()
+		reader.flush()
 		a.window.Update(func() {
 			if current == a.scanID {
-				if ctx.Err() == nil {
+				if ctx.Err() == nil && len(seen) != len(a.faces) {
 					a.faces = slices.DeleteFunc(a.faces, func(face fonts.Entry) bool {
 						_, exists := seen[face.ID()]
 						return !exists
@@ -220,6 +288,10 @@ func (a *appState) refresh() {
 					for index, face := range a.faces {
 						a.faceIndex[face.ID()] = index
 					}
+				}
+				if ctx.Err() == nil {
+					a.systemIDs = systemIDs
+					a.scopeCounts = counts.totals
 					a.compareIDs = slices.DeleteFunc(a.compareIDs, func(id string) bool {
 						_, exists := a.faceIndex[id]
 						return !exists
@@ -227,11 +299,14 @@ func (a *appState) refresh() {
 					if len(a.compareIDs) < 4 {
 						a.compareLimit = false
 					}
+				} else {
 					a.recount()
 				}
 				a.scanning = false
 				a.cancelScan = nil
 				a.rebuild()
+				a.pruneFamilyPreviews()
+				go debug.FreeOSMemory()
 			}
 		})
 	}()

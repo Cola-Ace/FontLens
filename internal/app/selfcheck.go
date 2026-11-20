@@ -2,8 +2,10 @@ package app
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"image"
@@ -244,37 +246,83 @@ func checkBrowserMetadata() error {
 }
 
 func checkPreviewCache() error {
-	app := appState{}
-	for _, key := range []string{"old", "recent", "new"} {
-		app.cachePreview(key, ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 2, 2))))
+	cache := bitmapCache{}
+	old := previewKey{settings: "old"}
+	recent := previewKey{settings: "recent"}
+	newest := previewKey{settings: "new"}
+	for _, key := range []previewKey{old, recent, newest} {
+		cache.put(key, ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 2, 2))), false)
 	}
-	app.touchPreview("old")
-	app.trimPreviews(nil, 32)
-	if app.previewBitmaps["recent"] != nil || app.previewBitmaps["old"] == nil || app.previewBitmaps["new"] == nil || app.previewHistory.bytes != 32 {
+	cache.touch(old)
+	cache.trim(nil, nil, 32)
+	if cache.bitmap(recent) != nil || cache.bitmap(old) == nil || cache.bitmap(newest) == nil || cache.bytes != 32 {
 		return fmt.Errorf("preview cache LRU eviction mismatch")
 	}
-	app.previewLast = map[string]*ui.Bitmap{"fallback": app.previewBitmaps["new"]}
-	app.trimPreviews(map[string]bool{"old": true}, 0)
-	if len(app.previewBitmaps) != 2 || app.previewHistory.bytes != 32 {
+	cache.trim(map[previewKey]bool{old: true}, map[*ui.Bitmap]bool{cache.bitmap(newest): true}, 0)
+	if len(cache.recent) != 2 || cache.bytes != 32 {
 		return fmt.Errorf("preview cache evicted displayed or fallback bitmap")
 	}
-	app.cachePreview("old", ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 1, 1))))
-	if app.previewHistory.bytes != 20 || app.previewHistory.order.Len() != 2 {
+	cache.put(old, ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 1, 1))), false)
+	if cache.bytes != 20 || cache.order.Len() != 2 {
 		return fmt.Errorf("preview cache replacement accounting mismatch")
 	}
-	app.previewLast = nil
-	app.trimPreviews(nil, 0)
-	if len(app.previewBitmaps) != 0 || app.previewHistory.bytes != 0 || app.previewHistory.order.Len() != 0 || len(app.previewHistory.recent) != 0 {
+	cache.trim(nil, nil, 0)
+	if cache.bytes != 0 || cache.order.Len() != 0 || len(cache.recent) != 0 {
 		return fmt.Errorf("preview cache retained unpinned bitmaps")
 	}
-	app.previewLoading = make(map[string]*previewRequest)
-	entry := fonts.Entry{Path: "cached-preview.ttf"}
-	key := app.previewKey(entry, "sample", 28, 260, 52, 1)
-	bitmap := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 2, 2)))
-	app.cachePreview(key, bitmap)
+
+	app := appState{previewLoading: make(map[previewKey]*previewRequest)}
+	entry := fonts.Entry{Path: "cached-preview.ttf", Family: "Cached"}
+	key := app.previewKey(entry, entry.Family, 28, 0, 44, 1)
+	sample := app.previewKey(entry, "sample", 28, 260, 52, 1)
+	app.comparePage = true
+	compare := app.previewKey(entry, "sample", 28, 260, 0, 1)
+	app.comparePage = false
+	if compare.slot == app.previewKey(entry, "sample", 28, 260, 0, 1).slot {
+		return fmt.Errorf("comparison and detail previews share a display slot")
+	}
+	bitmap := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 256, 44)))
+	app.samplePreviews.put(sample, bitmap, false)
+	app.familyPreviews.put(key, bitmap, false)
 	app.cancelPreviews(nil)
-	if app.previewBitmaps[key] != bitmap || app.ensurePreview(entry, "sample", 28, 260, 52, 1) != key || len(app.previewLoading) != 0 {
+	if app.familyPreviews.bitmap(key) != bitmap || app.ensurePreview(entry, entry.Family, 28, 0, 44, 1) != key || len(app.previewLoading) != 0 {
 		return fmt.Errorf("recent preview was rendered again after leaving the viewport")
+	}
+	for index := range 928 {
+		face := fonts.Entry{Path: fmt.Sprintf("font-%d.ttf", index), Family: "Font"}
+		app.familyPreviews.put(app.previewKey(face, face.Family, 28, 0, 44, 1), bitmap, false)
+		app.cancelPreviews(nil)
+	}
+	if app.familyPreviews.bytes > familyPreviewBudget || app.familyPreviews.bitmap(key) != nil || app.samplePreviews.bitmap(sample) != bitmap {
+		return fmt.Errorf("family preview cache exceeded its own budget")
+	}
+
+	app.familyPreviews.put(key, bitmap, false)
+	updated := entry
+	updated.Modified++
+	updatedKey := app.previewKey(updated, updated.Family, 28, 0, 44, 1)
+	app.familyPreviews.put(updatedKey, bitmap, false)
+	last := displayedPreview{bitmap: bitmap, width: 256, height: 44}
+	app.previewLast = map[previewSlot]displayedPreview{key.slot: last, updatedKey.slot: last, sample.slot: last}
+	pending := app.previewKey(entry, entry.Family, 30, 0, 44, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app.previewLoading[pending] = &previewRequest{cancel: cancel}
+	app.previewErrors = map[previewKey]string{key: "old error"}
+	updated.FullName = "Cached"
+	duplicate := updated
+	duplicate.Path = "duplicate.ttf"
+	app.familyPreviews.put(app.previewKey(duplicate, duplicate.Family, 28, 0, 44, 1), bitmap, false)
+	app.scope = "all"
+	app.faces = []fonts.Entry{updated, duplicate}
+	app.faceIndex = map[string]int{updated.ID(): 0, duplicate.ID(): 1}
+	app.rebuild()
+	app.pruneFamilyPreviews()
+	if len(app.familyPreviews.recent) != 1 || app.familyPreviews.order.Len() != 1 || app.familyPreviews.bytes != 256*44*4 ||
+		app.familyPreviews.bitmap(updatedKey) != bitmap || app.previewLast[key.slot].bitmap != nil || app.previewLast[updatedKey.slot] != last ||
+		app.samplePreviews.bitmap(sample) != bitmap || app.previewLast[sample.slot] != last ||
+		ctx.Err() != context.Canceled || len(app.previewLoading) != 0 || len(app.previewErrors) != 0 {
+		return fmt.Errorf("family preview cache pruning after list change mismatch")
 	}
 	return nil
 }
@@ -314,7 +362,7 @@ func checkFont(path, sample string) error {
 	}
 	for _, face := range faces {
 		for _, table := range face.Tables {
-			if table.Tag != "head" {
+			if table.Tag != "head" && table.Tag != "cmap" {
 				continue
 			}
 			end := uint64(table.Offset) + uint64(table.Size)
@@ -323,9 +371,19 @@ func checkFont(path, sample string) error {
 			}
 			raw, readErr := fonts.ReadRawTable(path, face.Index, table.Tag)
 			if readErr != nil || !bytes.Equal(raw, container[table.Offset:end]) {
-				return fmt.Errorf("face %d head directory offset mismatch: %v", face.Index, readErr)
+				return fmt.Errorf("face %d %s directory offset mismatch: %v", face.Index, table.Tag, readErr)
 			}
-			break
+			pages, err := fonts.OpenTablePages(face.Entry, table)
+			if err != nil {
+				return err
+			}
+			for _, page := range []int{0, max(0, len(raw)-1) / fonts.TablePageSize} {
+				data, err := pages.ReadPage(page)
+				start := page * fonts.TablePageSize
+				if err != nil || !bytes.Equal(data, raw[start:min(start+fonts.TablePageSize, len(raw))]) {
+					return fmt.Errorf("face %d %s page %d mismatch: %v", face.Index, table.Tag, page, err)
+				}
+			}
 		}
 	}
 	for _, table := range faces[0].Tables {
@@ -358,6 +416,9 @@ func checkFont(path, sample string) error {
 		if err != nil {
 			return fmt.Errorf("missing-glyph preview: %w", err)
 		}
+		if !blank.AllGlyphsMissing {
+			return fmt.Errorf("missing-glyph status absent")
+		}
 		for pixel := 3; pixel < len(blank.Pix); pixel += 4 {
 			if blank.Pix[pixel] != 0 {
 				return fmt.Errorf("missing glyphs were drawn instead of left blank")
@@ -367,9 +428,13 @@ func checkFont(path, sample string) error {
 		if err != nil {
 			return fmt.Errorf("mixed missing-glyph preview: %w", err)
 		}
-		if !bytes.Equal(bitmap.Pix, mixed.Pix) {
+		if mixed.AllGlyphsMissing != bitmap.AllGlyphsMissing || !bytes.Equal(bitmap.Pix, mixed.Pix) {
 			return fmt.Errorf("missing glyphs changed the supported preview text")
 		}
+	}
+	spaces, err := preview.Render(context.Background(), path, 0, nil, " \t", 28, 1.4, 260, 52, 1, color.RGBA{A: 255})
+	if err != nil || spaces.AllGlyphsMissing {
+		return fmt.Errorf("whitespace preview status mismatch: %v", err)
 	}
 	for _, scale := range []float32{1, 1.25, 1.5, 2} {
 		short, err := preview.Render(context.Background(), path, 0, nil, "A", 28, 1.4, 260, 0, scale, color.RGBA{A: 255})
@@ -388,7 +453,7 @@ func checkFont(path, sample string) error {
 		if short.Rect.Dy() <= 0 || tall.Rect.Dy() <= short.Rect.Dy() || wide.Rect.Dy() >= tall.Rect.Dy() || tall.Rect.Dx() != int(math.Ceil(float64(260*scale))) {
 			return fmt.Errorf("auto-height preview at %g× did not adapt to text and width", scale)
 		}
-		for _, centered := range []*image.RGBA{short, tall, wide} {
+		for _, centered := range []*preview.Result{short, tall, wide} {
 			top, bottom := centered.Rect.Dy(), -1
 			for y := 0; y < centered.Rect.Dy(); y++ {
 				for x := 0; x < centered.Rect.Dx(); x++ {
@@ -561,6 +626,9 @@ func checkStore(path string, faces []fonts.Face) error {
 		return err
 	}
 	defer checkDB.Close()
+	if err := checkLegacyFaceCache(checkDB, cache, entries[0]); err != nil {
+		return err
+	}
 	if _, err := checkDB.Exec(`CREATE TRIGGER reject_batch BEFORE INSERT ON faces
 		WHEN NEW.path='reject-batch' BEGIN SELECT RAISE(ABORT, 'batch rollback check'); END`); err != nil {
 		return err
@@ -594,6 +662,41 @@ func checkStore(path string, faces []fonts.Face) error {
 	close(failures)
 	for err := range failures {
 		return err
+	}
+	return nil
+}
+
+func checkLegacyFaceCache(db *sql.DB, cache *store.Store, entry fonts.Entry) error {
+	entry.Path += ".v10"
+	faces := []fonts.Entry{entry}
+	var payload bytes.Buffer
+	writer := gzip.NewWriter(&payload)
+	if err := gob.NewEncoder(writer).Encode(faces); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`INSERT INTO faces(path,size,modified,version,payload) VALUES(?,?,?,10,?)`, entry.Path, entry.Size, entry.Modified, payload.Bytes()); err != nil {
+		return err
+	}
+	snapshot, err := cache.LoadFaces(context.Background())
+	if err != nil {
+		return err
+	}
+	record := store.FaceRecord{Path: entry.Path, Size: entry.Size, Modified: entry.Modified}
+	if !snapshot.Lookup(&record) || !record.Upgrade || !slices.Equal(record.Faces, faces) {
+		return fmt.Errorf("v10 font index lookup mismatch")
+	}
+	if err := cache.SaveFacesBatch(context.Background(), []store.FaceRecord{record}); err != nil {
+		return err
+	}
+	var version int
+	if err := db.QueryRow(`SELECT version FROM faces WHERE path=?`, entry.Path).Scan(&version); err != nil {
+		return err
+	}
+	if loaded, ok := cache.Faces(entry.Path, entry.Size, entry.Modified); version != 11 || !ok || !slices.Equal(loaded, faces) {
+		return fmt.Errorf("v10 font index upgrade mismatch")
 	}
 	return nil
 }

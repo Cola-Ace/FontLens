@@ -6,17 +6,23 @@ import (
 	"context"
 	"database/sql"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"unicode/utf8"
 
 	"fontlens/internal/coverage"
 	"fontlens/internal/fonts"
 	_ "modernc.org/sqlite"
 )
 
-const version = 10
+const (
+	legacyFaceVersion = 10
+	faceVersion       = 11
+	coverageVersion   = 10
+)
 
 var gzipReaders sync.Pool
 var gzipWriters sync.Pool
@@ -29,6 +35,7 @@ type Store struct{ db *sql.DB }
 
 type cachedFaces struct {
 	size, modified int64
+	version        int
 	payload        []byte
 }
 
@@ -38,6 +45,7 @@ type FaceRecord struct {
 	Path           string
 	Size, Modified int64
 	Faces          []fonts.Entry
+	Upgrade        bool
 }
 
 func (s *Store) SaveFacesBatch(ctx context.Context, records []FaceRecord) error {
@@ -50,7 +58,7 @@ func (s *Store) SaveFacesBatch(ctx context.Context, records []FaceRecord) error 
 			return err
 		}
 		var err error
-		payloads[i], err = encode(record.Faces)
+		payloads[i], err = encodeFaces(record.Faces)
 		if err != nil {
 			return err
 		}
@@ -65,8 +73,19 @@ func (s *Store) SaveFacesBatch(ctx context.Context, records []FaceRecord) error 
 		return err
 	}
 	defer statement.Close()
+	upgrade, err := tx.PrepareContext(ctx, `UPDATE faces SET version=?, payload=?
+		WHERE path=? AND size=? AND modified=? AND version=?`)
+	if err != nil {
+		return err
+	}
+	defer upgrade.Close()
 	for i, record := range records {
-		if _, err := statement.ExecContext(ctx, record.Path, record.Size, record.Modified, version, payloads[i]); err != nil {
+		if record.Upgrade {
+			_, err = upgrade.ExecContext(ctx, faceVersion, payloads[i], record.Path, record.Size, record.Modified, legacyFaceVersion)
+		} else {
+			_, err = statement.ExecContext(ctx, record.Path, record.Size, record.Modified, faceVersion, payloads[i])
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -74,7 +93,7 @@ func (s *Store) SaveFacesBatch(ctx context.Context, records []FaceRecord) error 
 }
 
 func (s *Store) LoadFaces(ctx context.Context) (*FaceCache, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT path,size,modified,payload FROM faces WHERE version=?`, version)
+	rows, err := s.db.QueryContext(ctx, `SELECT path,size,modified,version,payload FROM faces WHERE version IN (?,?)`, legacyFaceVersion, faceVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +102,7 @@ func (s *Store) LoadFaces(ctx context.Context) (*FaceCache, error) {
 	for rows.Next() {
 		var path string
 		var file cachedFaces
-		if err := rows.Scan(&path, &file.size, &file.modified, &file.payload); err != nil {
+		if err := rows.Scan(&path, &file.size, &file.modified, &file.version, &file.payload); err != nil {
 			return nil, err
 		}
 		cache.files[path] = file
@@ -92,12 +111,39 @@ func (s *Store) LoadFaces(ctx context.Context) (*FaceCache, error) {
 }
 
 func (c *FaceCache) Faces(path string, size, modified int64) ([]fonts.Entry, bool) {
-	file, found := c.files[path]
-	if !found || file.size != size || file.modified != modified {
-		return nil, false
+	record := FaceRecord{Path: path, Size: size, Modified: modified}
+	found := c.Lookup(&record)
+	return record.Faces, found
+}
+
+func (c *FaceCache) Lookup(record *FaceRecord) bool {
+	file, found := c.files[record.Path]
+	if !found || file.size != record.Size || file.modified != record.Modified {
+		return false
 	}
+	record.Faces, found = decodeFaces(file.payload)
+	record.Upgrade = found && file.version == legacyFaceVersion
+	return found
+}
+
+func encodeFaces(faces []fonts.Entry) ([]byte, error) {
+	for _, face := range faces {
+		if !utf8.ValidString(face.Path) || !utf8.ValidString(face.Format) || !utf8.ValidString(face.FullName) || !utf8.ValidString(face.Family) {
+			return encode(faces)
+		}
+	}
+	return json.Marshal(faces)
+}
+
+func decodeFaces(payload []byte) ([]fonts.Entry, bool) {
 	var faces []fonts.Entry
-	if decode(file.payload, &faces) != nil {
+	var err error
+	if bytes.HasPrefix(payload, []byte{0x1f, 0x8b}) {
+		err = decode(payload, &faces)
+	} else {
+		err = json.Unmarshal(payload, &faces)
+	}
+	if err != nil {
 		return nil, false
 	}
 	return faces, true
@@ -131,29 +177,25 @@ func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) Faces(path string, size, modified int64) ([]fonts.Entry, bool) {
 	var payload []byte
-	err := s.db.QueryRow(`SELECT payload FROM faces WHERE path=? AND size=? AND modified=? AND version=?`, path, size, modified, version).Scan(&payload)
+	err := s.db.QueryRow(`SELECT payload FROM faces WHERE path=? AND size=? AND modified=? AND version IN (?,?)`, path, size, modified, legacyFaceVersion, faceVersion).Scan(&payload)
 	if err != nil {
 		return nil, false
 	}
-	var faces []fonts.Entry
-	if decode(payload, &faces) != nil {
-		return nil, false
-	}
-	return faces, true
+	return decodeFaces(payload)
 }
 
 func (s *Store) SaveFaces(path string, size, modified int64, faces []fonts.Entry) error {
-	payload, err := encode(faces)
+	payload, err := encodeFaces(faces)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(saveFacesSQL, path, size, modified, version, payload)
+	_, err = s.db.Exec(saveFacesSQL, path, size, modified, faceVersion, payload)
 	return err
 }
 
 func (s *Store) Coverage(key string) (coverage.Result, bool) {
 	var payload []byte
-	err := s.db.QueryRow(`SELECT payload FROM coverage WHERE key=? AND version=?`, key, version).Scan(&payload)
+	err := s.db.QueryRow(`SELECT payload FROM coverage WHERE key=? AND version=?`, key, coverageVersion).Scan(&payload)
 	if err != nil {
 		return coverage.Result{}, false
 	}
@@ -170,7 +212,7 @@ func (s *Store) SaveCoverage(key string, result coverage.Result) error {
 		return err
 	}
 	_, err = s.db.Exec(`INSERT INTO coverage(key,version,payload) VALUES(?,?,?)
-		ON CONFLICT(key) DO UPDATE SET version=excluded.version, payload=excluded.payload`, key, version, payload)
+		ON CONFLICT(key) DO UPDATE SET version=excluded.version, payload=excluded.payload`, key, coverageVersion, payload)
 	return err
 }
 

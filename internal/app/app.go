@@ -23,6 +23,8 @@ type appState struct {
 	tree              ui.OutlineState[string]
 	treeRow           int
 	table             ui.ListState
+	detailList        ui.ListState
+	fileInfoOpen      bool
 	selectedRow       int
 	selectedID        string
 	detailFace        *fonts.Face
@@ -53,7 +55,7 @@ type appState struct {
 	browserEntries    []browserEntry
 	faceIndex         map[string]int
 	systemIDs         map[string]bool
-	scopeCounts       map[string]map[string]struct{}
+	scopeCounts       map[string]int
 	rows              []fonts.Entry
 	dirs              map[string][]string
 	errors            []string
@@ -71,21 +73,23 @@ type appState struct {
 	previewText       string
 	previewPreset     string
 	customPreviewText string
+	previewOverrides  map[string]string
 	previewSize       float32
 	previewLineHeight float32
-	previewBitmaps    map[string]*ui.Bitmap
-	previewHistory    bitmapHistory
-	previewLast       map[string]*ui.Bitmap
-	previewLoading    map[string]*previewRequest
-	previewWanted     map[string]bool
-	previewSlots      map[string]bool
-	previewErrors     map[string]string
+	familyPreviews    bitmapCache
+	samplePreviews    bitmapCache
+	previewLast       map[previewSlot]displayedPreview
+	previewLoading    map[previewKey]*previewRequest
+	previewWanted     map[previewKey]bool
+	previewSlots      map[previewSlot]bool
+	previewErrors     map[previewKey]string
 	compareIDs        []string
 	comparePage       bool
 	compareLimit      bool
 	rawViewOpen       bool
 	rawFace           fonts.Entry
-	rawTag            string
+	rawTable          fonts.Table
+	rawPages          *fonts.TablePages
 	rawData           []byte
 	rawError          string
 	rawLoading        *loadingHint
@@ -98,10 +102,10 @@ type appState struct {
 
 func (a *appState) view(c *ui.Context) {
 	animateTheme(c)
-	a.previewWanted = make(map[string]bool)
+	a.previewWanted = make(map[previewKey]bool)
 	// Keep displayed previews available when returning from pages without previews.
 	if !a.rawViewOpen && !a.coveragePage {
-		a.previewSlots = make(map[string]bool)
+		a.previewSlots = make(map[previewSlot]bool)
 	}
 	defer a.cancelPreviews(a.previewWanted)
 	if a.comparePage {
@@ -120,9 +124,12 @@ func (a *appState) view(c *ui.Context) {
 	leftWidth, centerWidth := a.leftWidth, a.centerWidth
 	paneScale := min(float32(1), width/1024)
 	leftWidth = min(leftWidth, width-800*paneScale)
-	centerWidth = min(centerWidth, width-leftWidth-280*paneScale-2)
+	centerAndDetailWidth := width - leftWidth - 2
+	centerWidth = min(centerWidth, centerAndDetailWidth-280*paneScale)
 	if ui.Split(c, &leftWidth, func() { a.sidebar(c) }, func() {
-		if ui.Split(c, &centerWidth, func() { a.browser(c, centerWidth) }, func() { a.details(c) }).Fill().Changed() {
+		if ui.Split(c, &centerWidth, func() { a.browser(c, centerWidth) }, func() {
+			a.details(c, centerAndDetailWidth-centerWidth)
+		}).Fill().Changed() {
 			a.centerWidth = centerWidth
 		}
 	}).Fill().Changed() {

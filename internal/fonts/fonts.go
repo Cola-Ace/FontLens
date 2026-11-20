@@ -83,6 +83,10 @@ func DecodeWebFont(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return decodeWebFont(path, data)
+}
+
+func decodeWebFont(path string, data []byte) ([]byte, error) {
 	if strings.EqualFold(filepath.Ext(path), ".woff2") {
 		return webfont.ParseWOFF2(data)
 	}
@@ -336,6 +340,74 @@ func ReadRawTable(path string, faceIndex int, tag string) ([]byte, error) {
 	return loaders[faceIndex].RawTable(opentype.MustNewTag(tag))
 }
 
+const TablePageSize = 256
+
+type TablePages struct {
+	face     Entry
+	table    Table
+	unpacked []byte
+}
+
+func (face Entry) openCurrentFile() (*os.File, error) {
+	file, err := os.Open(face.Path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err == nil && (info.Size() != face.Size || info.ModTime().UnixNano() != face.Modified) {
+		err = fmt.Errorf("字体文件已更改，请刷新列表")
+	}
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+func OpenTablePages(face Entry, table Table) (*TablePages, error) {
+	pages := &TablePages{face: face, table: table}
+	if face.Format == "WOFF" || face.Format == "WOFF2" {
+		file, err := face.openCurrentFile()
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+		data, err := io.ReadAll(file)
+		if err != nil {
+			return nil, err
+		}
+		decoded, err := decodeWebFont(face.Path, data)
+		if err != nil {
+			return nil, err
+		}
+		end := int64(table.Offset) + int64(table.Size)
+		if end > int64(len(decoded)) {
+			return nil, fmt.Errorf("表 %s 超出字体数据范围", table.Tag)
+		}
+		pages.unpacked = decoded[table.Offset:end]
+	}
+	return pages, nil
+}
+
+func (pages *TablePages) ReadPage(page int) ([]byte, error) {
+	if page < 0 || page > max(0, pages.table.Size-1)/TablePageSize {
+		return nil, fmt.Errorf("页码超出表 %s 的范围", pages.table.Tag)
+	}
+	start := page * TablePageSize
+	end := min(start+TablePageSize, pages.table.Size)
+	if pages.unpacked != nil {
+		return pages.unpacked[start:end], nil
+	}
+	file, err := pages.face.openCurrentFile()
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data := make([]byte, end-start)
+	_, err = file.ReadAt(data, int64(pages.table.Offset)+int64(start))
+	return data, err
+}
+
 func readNames(data []byte) []NameRecord {
 	if len(data) < 6 {
 		return nil
@@ -516,17 +588,28 @@ func readCmap(data []byte) (codepoints.Set, string, error) {
 	return nil, "未提供", nil
 }
 
-func Scan(ctx context.Context, root string, read func(string) ([]Entry, error), directory func(string), visit func(Entry), report func(string, error)) error {
-	return filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+func WalkFiles(ctx context.Context, root string, files func([]string), directory func(string), report func(string, error)) error {
+	paths := make([]string, 0, 8)
+	flush := func() {
+		if len(paths) > 0 && ctx.Err() == nil {
+			files(paths)
+			paths = paths[:0]
+		}
+	}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err != nil {
-			report(path, err)
-			return nil
-		}
-		if entry.IsDir() {
-			directory(path)
+		if err != nil || entry.IsDir() {
+			flush()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err != nil {
+				report(path, err)
+			} else {
+				directory(path)
+			}
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
@@ -536,14 +619,15 @@ func Scan(ctx context.Context, root string, read func(string) ([]Entry, error), 
 		if ext != ".ttf" && ext != ".otf" && ext != ".ttc" && ext != ".otc" && ext != ".woff" && ext != ".woff2" {
 			return nil
 		}
-		faces, readErr := read(path)
-		if readErr != nil {
-			report(path, readErr)
-			return nil
-		}
-		for _, face := range faces {
-			visit(face)
+		paths = append(paths, path)
+		if len(paths) == cap(paths) {
+			flush()
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	flush()
+	return ctx.Err()
 }

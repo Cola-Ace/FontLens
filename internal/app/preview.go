@@ -20,73 +20,104 @@ type previewRequest struct {
 	hint   *loadingHint
 }
 
-const previewCacheBudget int64 = 32 << 20
+const (
+	familyPreviewBudget int64 = 4 << 20
+	samplePreviewBudget int64 = 28 << 20
+)
 
-type bitmapHistory struct {
-	recent map[string]*list.Element
+type previewSlot struct {
+	font, view     string
+	size, modified int64
+}
+
+type previewKey struct {
+	slot     previewSlot
+	settings string
+}
+
+type displayedPreview struct {
+	bitmap        *ui.Bitmap
+	width, height float32
+	offsetY       float32
+}
+
+type bitmapCache struct {
+	recent map[previewKey]*list.Element
 	order  list.List
 	bytes  int64
 }
 
 type cachedBitmap struct {
-	key   string
-	bytes int64
+	key              previewKey
+	bitmap           *ui.Bitmap
+	bytes            int64
+	allGlyphsMissing bool
 }
 
-func (a *appState) cachePreview(key string, bitmap *ui.Bitmap) {
-	if a.previewHistory.recent == nil {
-		a.previewHistory.recent = make(map[string]*list.Element)
+func (cache *bitmapCache) put(key previewKey, bitmap *ui.Bitmap, allGlyphsMissing bool) {
+	if cache.recent == nil {
+		cache.recent = make(map[previewKey]*list.Element)
 	}
-	if a.previewBitmaps == nil {
-		a.previewBitmaps = make(map[string]*ui.Bitmap)
+	if previous := cache.recent[key]; previous != nil {
+		cache.remove(previous)
 	}
-	if previous := a.previewHistory.recent[key]; previous != nil {
-		a.previewHistory.bytes -= previous.Value.(cachedBitmap).bytes
-		a.previewHistory.order.Remove(previous)
-	}
-	w, h := bitmap.Size()
-	entry := cachedBitmap{key: key, bytes: int64(w) * int64(h) * 4}
-	a.previewHistory.recent[key] = a.previewHistory.order.PushFront(entry)
-	a.previewHistory.bytes += entry.bytes
-	a.previewBitmaps[key] = bitmap
+	width, height := bitmap.Size()
+	entry := cachedBitmap{key: key, bitmap: bitmap, bytes: int64(width) * int64(height) * 4, allGlyphsMissing: allGlyphsMissing}
+	cache.recent[key] = cache.order.PushFront(entry)
+	cache.bytes += entry.bytes
 }
 
-func (a *appState) touchPreview(key string) {
-	if entry := a.previewHistory.recent[key]; entry != nil {
-		a.previewHistory.order.MoveToFront(entry)
+func (cache *bitmapCache) bitmap(key previewKey) *ui.Bitmap {
+	if item := cache.recent[key]; item != nil {
+		return item.Value.(cachedBitmap).bitmap
+	}
+	return nil
+}
+
+func (cache *bitmapCache) touch(key previewKey) {
+	if item := cache.recent[key]; item != nil {
+		cache.order.MoveToFront(item)
 	}
 }
 
-func (a *appState) trimPreviews(wanted map[string]bool, budget int64) {
-	if a.previewHistory.bytes <= budget {
-		return
-	}
-	pinned := make(map[*ui.Bitmap]bool, len(a.previewLast))
-	for _, bitmap := range a.previewLast {
-		pinned[bitmap] = true
-	}
+func (cache *bitmapCache) remove(item *list.Element) {
+	entry := cache.order.Remove(item).(cachedBitmap)
+	delete(cache.recent, entry.key)
+	cache.bytes -= entry.bytes
+}
+
+func (cache *bitmapCache) trim(wanted map[previewKey]bool, pinned map[*ui.Bitmap]bool, budget int64) {
 	// The budget counts base RGBA pixels; displayed and fallback previews stay pinned.
-	for item := a.previewHistory.order.Back(); item != nil && a.previewHistory.bytes > budget; {
+	for item := cache.order.Back(); item != nil && cache.bytes > budget; {
 		previous := item.Prev()
 		entry := item.Value.(cachedBitmap)
-		if !wanted[entry.key] && !pinned[a.previewBitmaps[entry.key]] {
-			delete(a.previewBitmaps, entry.key)
-			delete(a.previewHistory.recent, entry.key)
-			a.previewHistory.bytes -= entry.bytes
-			a.previewHistory.order.Remove(item)
+		if !wanted[entry.key] && !pinned[entry.bitmap] {
+			cache.remove(item)
 		}
 		item = previous
 	}
 }
 
+func (a *appState) previewCache(key previewKey) *bitmapCache {
+	if key.slot.view == "list" {
+		return &a.familyPreviews
+	}
+	return &a.samplePreviews
+}
+
 func (a *appState) compareView(c *ui.Context) {
+	const outerPadding, gap, cardPadding, border = 20, 16, 16, 1
 	faces := make([]fonts.Entry, 0, len(a.compareIDs))
 	for _, id := range a.compareIDs {
 		if index, exists := a.faceIndex[id]; exists {
 			faces = append(faces, a.faces[index])
 		}
 	}
-	ui.Column(c).Fill().Padding(20).Gap(12).Children(func() {
+	width, _ := c.Size()
+	columns := max(1, min(2, len(faces)))
+	cardWidth := (width - 2*outerPadding - float32(columns-1)*gap) / float32(columns)
+	previewWidth := max(1, int(cardWidth-2*(cardPadding+border)))
+	ui.Column(c).Fill().Padding(outerPadding).Gap(12).Children(func() {
 		ui.Row(c).Gap(12).Children(func() {
 			if ui.Button(c, "返回浏览").Clicked() {
 				a.comparePage = false
@@ -94,13 +125,13 @@ func (a *appState) compareView(c *ui.Context) {
 			ui.Textf(c, "字体对比 · %d 款", len(faces)).FontSize(22).Bold()
 		})
 		a.previewToolbar(c)
-		a.syncPreviews(c, faces, a.previewText, a.previewSize*1.5, 450, 240)
-		ui.Scroll(c).Grow(1).Children(func() {
-			for start := 0; start < len(faces); start += 2 {
-				end := min(start+2, len(faces))
-				ui.Row(c).Gap(16).Children(func() {
+		a.syncPreviews(c, faces, a.previewText, a.previewSize, previewWidth, 0)
+		ui.Scroll(c).Grow(1).Gap(gap).Children(func() {
+			for start := 0; start < len(faces); start += columns {
+				end := min(start+columns, len(faces))
+				ui.Row(c).Gap(gap).AlignItems(ui.Stretch).Children(func() {
 					for _, face := range faces[start:end] {
-						ui.Column(c).Grow(1).Padding(16).Gap(8).Children(func() {
+						ui.Column(c).Width(cardWidth).Padding(cardPadding).Gap(8).Children(func() {
 							ui.Row(c).Gap(8).Children(func() {
 								ui.Text(c, face.FullName).FontSize(18).Bold().Grow(1)
 								if ui.Button(c, "移除").Clicked() {
@@ -108,8 +139,8 @@ func (a *appState) compareView(c *ui.Context) {
 								}
 							})
 							ui.Textf(c, "%s · 面 %d", face.Path, face.Index+1).SingleLine().TextColor(c.Theme().TextMuted)
-							a.previewView(c, face, a.previewSize*1.5, 450, 240)
-						}).Border(1, c.Theme().Border).Radius(8)
+							a.previewView(c, face, a.previewSize, previewWidth, 0)
+						}).Border(border, c.Theme().Border).Radius(8)
 					}
 				})
 			}
@@ -120,8 +151,14 @@ func (a *appState) compareView(c *ui.Context) {
 func (a *appState) previewToolbar(c *ui.Context) {
 	ui.Row(c).Gap(8).Children(func() {
 		if ui.TextInput(c, &a.previewText).Placeholder("输入预览文案").Grow(1).Changed() {
-			a.previewPreset = "自定义"
-			a.customPreviewText = a.previewText
+			if a.previewPreset == "自定义" {
+				a.customPreviewText = a.previewText
+			} else {
+				if a.previewOverrides == nil {
+					a.previewOverrides = make(map[string]string)
+				}
+				a.previewOverrides[a.previewPreset] = a.previewText
+			}
 			a.saveSettings()
 		}
 		labels := []string{"自定义"}
@@ -129,6 +166,12 @@ func (a *appState) previewToolbar(c *ui.Context) {
 			labels = append(labels, preset.Label)
 		}
 		if ui.Select(c, &a.previewPreset, labels).Changed() {
+			a.selectPreviewPreset(a.previewPreset)
+			a.saveSettings()
+		}
+		_, edited := a.previewOverrides[a.previewPreset]
+		if ui.Button(c, "恢复默认文案").Disabled(!edited).Clicked() {
+			delete(a.previewOverrides, a.previewPreset)
 			a.selectPreviewPreset(a.previewPreset)
 			a.saveSettings()
 		}
@@ -158,13 +201,16 @@ func (a *appState) selectPreviewPreset(label string) {
 		if preset.Label == label {
 			a.previewPreset = label
 			a.previewText = preset.Text
+			if text, edited := a.previewOverrides[label]; edited {
+				a.previewText = text
+			}
 			break
 		}
 	}
 }
 
-func (a *appState) previewKey(face fonts.Entry, sample string, size float32, width, height int, scale float32) string {
-	key := fmt.Sprintf("%s:%g:%g:%d:%d:%g:%s", coverageKey(face), size, a.previewLineHeight, width, height, scale, sample)
+func (a *appState) previewKey(face fonts.Entry, sample string, size float32, width, height int, scale float32) previewKey {
+	settings := fmt.Sprintf("%g:%g:%d:%d:%g:%s", size, a.previewLineHeight, width, height, scale, sample)
 	axes := a.axisValues[face.ID()]
 	tags := make([]string, 0, len(axes))
 	for tag := range axes {
@@ -172,21 +218,28 @@ func (a *appState) previewKey(face fonts.Entry, sample string, size float32, wid
 	}
 	slices.Sort(tags)
 	for _, tag := range tags {
-		key += fmt.Sprintf(":%s=%.3f", tag, axes[tag])
+		settings += fmt.Sprintf(":%s=%.3f", tag, axes[tag])
 	}
-	return key
+	view := "list"
+	if width > 0 {
+		view = "details"
+		if a.comparePage {
+			view = "compare"
+		}
+	}
+	return previewKey{slot: previewSlot{font: face.ID(), size: face.Size, modified: face.Modified, view: view}, settings: settings}
 }
 
-func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, width, height int, scale float32) string {
+func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, width, height int, scale float32) previewKey {
 	if a.previewLoading == nil {
-		a.previewBitmaps = make(map[string]*ui.Bitmap)
-		a.previewLast = make(map[string]*ui.Bitmap)
-		a.previewLoading = make(map[string]*previewRequest)
-		a.previewErrors = make(map[string]string)
+		a.previewLast = make(map[previewSlot]displayedPreview)
+		a.previewLoading = make(map[previewKey]*previewRequest)
+		a.previewErrors = make(map[previewKey]string)
 	}
 	key := a.previewKey(face, sample, size, width, height, scale)
-	if a.previewBitmaps[key] != nil || a.previewLoading[key] != nil || a.previewErrors[key] != "" {
-		a.touchPreview(key)
+	cache := a.previewCache(key)
+	if cache.bitmap(key) != nil || a.previewLoading[key] != nil || a.previewErrors[key] != "" {
+		cache.touch(key)
 		return key
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -218,13 +271,19 @@ func (a *appState) ensurePreview(face fonts.Entry, sample string, size float32, 
 				a.previewErrors[key] = err.Error()
 				return
 			}
-			a.cachePreview(key, ui.NewBitmap(bitmap))
+			cache.put(key, ui.NewBitmap(bitmap.RGBA), bitmap.AllGlyphsMissing)
 		})
 	}()
 	return key
 }
 
-func (a *appState) cancelPreviews(wanted map[string]bool) {
+func (a *appState) cancelPreview(key previewKey, request *previewRequest) {
+	request.hint.finish()
+	request.cancel()
+	delete(a.previewLoading, key)
+}
+
+func (a *appState) cancelPreviews(wanted map[previewKey]bool) {
 	for slot := range a.previewLast {
 		if !a.previewSlots[slot] {
 			delete(a.previewLast, slot)
@@ -232,9 +291,7 @@ func (a *appState) cancelPreviews(wanted map[string]bool) {
 	}
 	for key, request := range a.previewLoading {
 		if !wanted[key] {
-			request.hint.finish()
-			request.cancel()
-			delete(a.previewLoading, key)
+			a.cancelPreview(key, request)
 		}
 	}
 	for key := range a.previewErrors {
@@ -242,7 +299,45 @@ func (a *appState) cancelPreviews(wanted map[string]bool) {
 			delete(a.previewErrors, key)
 		}
 	}
-	a.trimPreviews(wanted, previewCacheBudget)
+	if a.familyPreviews.bytes > familyPreviewBudget || a.samplePreviews.bytes > samplePreviewBudget {
+		pinned := make(map[*ui.Bitmap]bool, len(a.previewLast))
+		for _, last := range a.previewLast {
+			pinned[last.bitmap] = true
+		}
+		a.familyPreviews.trim(wanted, pinned, familyPreviewBudget)
+		a.samplePreviews.trim(wanted, pinned, samplePreviewBudget)
+	}
+}
+
+func (a *appState) pruneFamilyPreviews() {
+	retained := func(slot previewSlot) bool {
+		index, ok := a.faceIndex[slot.font]
+		if !ok {
+			return false
+		}
+		entry := &a.browserEntries[index]
+		return entry.inResults && entry.face.Family != "" && entry.face.Size == slot.size && entry.face.Modified == slot.modified
+	}
+	for key, item := range a.familyPreviews.recent {
+		if !retained(key.slot) {
+			a.familyPreviews.remove(item)
+		}
+	}
+	for slot := range a.previewLast {
+		if slot.view == "list" && !retained(slot) {
+			delete(a.previewLast, slot)
+		}
+	}
+	for key, request := range a.previewLoading {
+		if key.slot.view == "list" && !retained(key.slot) {
+			a.cancelPreview(key, request)
+		}
+	}
+	for key := range a.previewErrors {
+		if key.slot.view == "list" && !retained(key.slot) {
+			delete(a.previewErrors, key)
+		}
+	}
 }
 
 func (a *appState) syncPreviews(c *ui.Context, faces []fonts.Entry, sample string, size float32, width, height int) {
@@ -258,11 +353,11 @@ func (a *appState) syncPreviews(c *ui.Context, faces []fonts.Entry, sample strin
 	}
 }
 
-func (a *appState) syncPreview(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) string {
+func (a *appState) syncPreview(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) previewKey {
 	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
 	key := a.ensurePreview(face, sample, size, width, height, scale)
 	a.previewWanted[key] = true
-	a.previewSlots[previewSlot(face, width, height)] = true
+	a.previewSlots[key.slot] = true
 	return key
 }
 
@@ -270,68 +365,53 @@ func (a *appState) previewView(c *ui.Context, face fonts.Entry, size float32, wi
 	a.previewTextView(c, face, a.previewText, size, width, height)
 }
 
-func previewSlot(face fonts.Entry, width, height int) string {
-	view, id := "list", face.ID()
-	if width > 0 {
-		view = "compare"
-		if height == 0 {
-			view = "details"
-		}
-	}
-	return fmt.Sprintf("%s:%s", view, id)
-}
-
 func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample string, size float32, width, height int) ui.Element {
 	scale := float32(hidpi.GetDpiForWindow(foundation.HWND(a.window.NativeHandle()))) / 96
-	var offsetY float32
-	if width == 0 {
-		offsetY = -size * 0.2
-	}
 	key := a.previewKey(face, sample, size, width, height, scale)
-	slot := previewSlot(face, width, height)
+	slot := key.slot
+	cache := a.previewCache(key)
 	a.previewWanted[key] = true
 	a.previewSlots[slot] = true
 	request := a.previewLoading[key]
 	loading := request != nil && request.hint.show()
-	if bitmap := a.previewBitmaps[key]; bitmap != nil {
-		a.touchPreview(key)
-		if a.previewSlots[slot] {
-			a.previewLast[slot] = bitmap
+	if item := cache.recent[key]; item != nil {
+		cache.touch(key)
+		entry := item.Value.(cachedBitmap)
+		if width > 0 && entry.allGlyphsMissing {
+			delete(a.previewLast, slot)
+			return ui.Text(c, "当前字体不含这段文字的字形").TextColor(c.Theme().TextMuted)
 		}
-		displayWidth := float32(width)
-		displayHeight := float32(height)
+		bitmap := entry.bitmap
+		frame := displayedPreview{bitmap: bitmap, width: float32(width), height: float32(height)}
 		if width == 0 {
-			displayWidth, _ = ui.ImageSize(bitmap)
-			displayWidth /= scale
+			pixelWidth, _ := ui.ImageSize(bitmap)
+			frame.width = pixelWidth / scale
+			frame.offsetY = -size * 0.2
 		}
 		if height == 0 {
-			_, displayHeight = ui.ImageSize(bitmap)
-			displayHeight /= scale
+			_, pixelHeight := ui.ImageSize(bitmap)
+			frame.height = pixelHeight / scale
 		}
-		image := previewImage(c, bitmap, displayWidth, displayHeight, offsetY)
+		a.previewLast[slot] = frame
+		image := frame.view(c)
 		if width == 0 {
 			image.Shrink(0)
 		}
 		return image
 	} else if message := a.previewErrors[key]; message != "" {
 		return ui.Text(c, message).TextColor(c.Theme().TextMuted).SingleLine()
-	} else if bitmap := a.previewLast[slot]; bitmap != nil {
-		displayWidth := float32(width)
-		displayHeight := float32(height)
+	} else if last := a.previewLast[slot]; last.bitmap != nil {
+		box := ui.Box(c).Size(last.width, last.height)
 		if width == 0 {
-			displayWidth, _ = ui.ImageSize(bitmap)
-			displayWidth /= scale
-		}
-		if height == 0 {
-			_, displayHeight = ui.ImageSize(bitmap)
-			displayHeight /= scale
-		}
-		box := ui.Box(c).Size(displayWidth, displayHeight)
-		if width == 0 {
-			box.Shrink(0)
+			box.Shrink(0).Height(float32(height))
+		} else if height == 0 {
+			box.Width(float32(width)).Clip()
 		}
 		return box.Children(func() {
-			previewImage(c, bitmap, displayWidth, displayHeight, offsetY)
+			image := last.view(c)
+			if width == 0 || height == 0 {
+				image.Absolute().Left(0).Top(0)
+			}
 			if loading {
 				ui.Text(c, "更新中…").Absolute().Right(4).Bottom(2).FontSize(12).TextColor(c.Theme().TextMuted)
 			}
@@ -353,12 +433,12 @@ func (a *appState) previewTextView(c *ui.Context, face fonts.Entry, sample strin
 	}
 }
 
-func previewImage(c *ui.Context, bitmap *ui.Bitmap, width, height, offsetY float32) ui.Element {
-	return ui.Box(c).Size(width, height).Draw(func(p *ui.Painter, r ui.Rect) {
-		w, h := ui.ImageSize(bitmap)
+func (frame displayedPreview) view(c *ui.Context) ui.Element {
+	return ui.Box(c).Size(frame.width, frame.height).Draw(func(p *ui.Painter, r ui.Rect) {
+		w, h := ui.ImageSize(frame.bitmap)
 		scale := min(r.W/w, r.H/h)
 		// Keep the list's baseline adjustment in the pixel-snapped drawing path.
-		dst := ui.Rect{X: r.X + (r.W-w*scale)/2, Y: r.Y + (r.H-h*scale)/2 + offsetY, W: w * scale, H: h * scale}
-		p.ImageRegion(bitmap, ui.Rect{}, dst, ui.ImageOptions{Tint: p.Theme().Text})
+		dst := ui.Rect{X: r.X + (r.W-w*scale)/2, Y: r.Y + (r.H-h*scale)/2 + frame.offsetY, W: w * scale, H: h * scale}
+		p.ImageRegion(frame.bitmap, ui.Rect{}, dst, ui.ImageOptions{Tint: p.Theme().Text})
 	})
 }

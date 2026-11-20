@@ -4,6 +4,8 @@
 
 字镜是面向 **Windows 11 x64** 的离线字体浏览工具，以 Go 和 MyGo 构建原生界面，通过 DirectWrite 排版、Direct2D 绘制字体预览。
 
+根据可变字体预览所用的 DirectWrite 接口，理论上最低可在 **Windows 10 1809 x64（Build 17763）** 上运行。字镜尚未在 Windows 10 上测试，可能遇到 Windows 11 上不会出现的兼容性问题。
+
 ## 功能
 
 - **浏览与查找**：枚举系统及当前用户安装的字体，递归读取自定义文件夹；支持 TTF、OTF、TTC、OTC、WOFF 和 WOFF2，按字体面浏览、全名搜索、格式筛选和自然排序。同一范围内全名相同的字体只显示首次扫描的一份。
@@ -14,7 +16,7 @@
 
 ## 使用
 
-启动后在左侧选择“全部”或“系统字体”。点击左下角“添加文件夹”递归读取本地字体目录，点击目录树节点限定浏览范围。
+启动后在左侧选择“全部”或“系统字体”。点击侧栏顶部的“添加文件夹”添加本地字体目录，点击目录树节点限定浏览范围。
 
 选择字体行后，右侧显示详情与覆盖统计；双击行可打开字体文件，右键可复制 Family Name 或打开所在目录。勾选 2–4 行后点击“对比”，使用同一文案查看不同字体。完整操作说明见 [使用指南](docs/USER.md)。
 
@@ -30,7 +32,7 @@
 ./scripts/build.ps1
 ```
 
-首次构建需要下载 Go 依赖。脚本设置 `CGO_ENABLED=0` 和 `GOFLAGS=-mod=readonly`，清理目标输出目录，再使用锁定的 MyGo v0.8.3 构建。产物为 `dist/windows-amd64/FontLens.exe`，图标与应用数据内嵌，分发时只需该 EXE。
+首次构建需要下载 Go 依赖。脚本设置 `CGO_ENABLED=0` 和 `GOFLAGS=-mod=readonly`，清理目标输出目录，再使用锁定的 MyGo v0.10.0 构建。产物为 `dist/windows-amd64/FontLens.exe`，图标与应用数据内嵌，分发时只需该 EXE。
 
 提交前执行静态检查与内置自检：
 
@@ -47,7 +49,7 @@ go tool mygo vet
 
 变更通过面向 `main` 的 PR 合并，PR 标题遵循 Angular Commit Message Guidelines。Windows CI 执行格式检查、Go/MyGo 静态检查、便携单 EXE 构建、版本校验、自检与启动检查，并保留 7 天构建产物。
 
-`mygo.json` 是版本号的唯一来源，当前版本为 `0.3.0`。正式发布时，通过版本 PR 更新版本号并添加 `releases/vX.Y.Z.md`；合并后 CI 构建并验证该提交，创建 Release 并上传 `FontLens-vX.Y.Z-win-x64.exe`。普通 PR 不触发正式发布。
+`mygo.json` 是版本号的唯一来源，当前版本为 `0.4.0`。正式发布时，通过版本 PR 更新版本号并添加 `releases/vX.Y.Z.md`；合并后 CI 构建并验证该提交，创建 Release 并上传 `FontLens-vX.Y.Z-win-x64.exe`。普通 PR 不触发正式发布。
 
 ## 源码结构
 

@@ -2,7 +2,7 @@
 
 | 组件或数据 | 版本 | 许可文件 |
 | --- | --- | --- |
-| MyGo | v0.8.3 | MyGo-MIT.txt |
+| MyGo | v0.10.0 | MyGo-MIT.txt |
 | purego | v0.11.1 | purego-Apache-2.0.txt |
 | go-text/typesetting | v0.3.5 | go-text-LICENSE.txt（可选 Unlicense） |
 | go-bindings-win32 | v0.5.0 | go-bindings-win32-MIT.txt |

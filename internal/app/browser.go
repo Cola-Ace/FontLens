@@ -16,21 +16,21 @@ import (
 	"golang.org/x/text/language"
 )
 
-func (a *appState) inScope(face fonts.Entry) bool {
+func (a *appState) inScope(entry *browserEntry) bool {
 	switch a.scope {
 	case "all":
 		return true
 	case "system":
-		return a.systemIDs[face.ID()]
+		return a.systemIDs[entry.id]
 	case "custom":
 		for _, root := range a.sources {
-			if within(root, face.Path) {
+			if within(root, entry.face.Path) {
 				return true
 			}
 		}
 		return false
 	default:
-		return within(a.scope, face.Path)
+		return within(a.scope, entry.face.Path)
 	}
 }
 
@@ -40,13 +40,13 @@ func within(root, path string) bool {
 }
 
 type browserEntry struct {
-	face                fonts.Entry
-	id, name, key, path string
-	order               []byte
+	face          fonts.Entry
+	id, name, key string
+	order         []byte
+	inResults     bool
 }
 
 func (a *appState) rebuild() {
-	a.rows = a.rows[:0]
 	seen := make(map[string]struct{})
 	query := strings.ToLower(a.query)
 	for len(a.browserEntries) < len(a.faces) {
@@ -61,16 +61,18 @@ func (a *appState) rebuild() {
 		entry := &a.browserEntries[i]
 		if entry.face != face || entry.id == "" {
 			name := strings.ToLower(face.FullName)
-			*entry = browserEntry{face: face, id: face.ID(), name: name, key: strings.TrimSpace(name), path: strings.ToLower(face.Path)}
+			*entry = browserEntry{face: face, id: face.ID(), name: name, key: strings.TrimSpace(name)}
 			if entry.key == "" {
 				entry.key = entry.id
 			}
 		}
-		if a.inScope(face) && (a.format == "" || face.Format == a.format) && strings.Contains(entry.name, query) {
+		entry.inResults = false
+		if (a.format == "" || face.Format == a.format) && strings.Contains(entry.name, query) && a.inScope(entry) {
 			if _, exists := seen[entry.key]; exists {
 				continue
 			}
 			seen[entry.key] = struct{}{}
+			entry.inResults = true
 			if a.sortMode != 0 && entry.order == nil {
 				if nameOrder == nil {
 					nameOrder = collate.New(language.Chinese, collate.IgnoreCase, collate.Numeric)
@@ -86,7 +88,7 @@ func (a *appState) rebuild() {
 			left, right := &a.browserEntries[leftIndex], &a.browserEntries[rightIndex]
 			order := bytes.Compare(left.order, right.order)
 			if order == 0 {
-				order = strings.Compare(left.path, right.path)
+				order = strings.Compare(strings.ToLower(left.face.Path), strings.ToLower(right.face.Path))
 			}
 			if order == 0 {
 				order = left.face.Index - right.face.Index
@@ -97,6 +99,10 @@ func (a *appState) rebuild() {
 			return order
 		})
 	}
+	if len(ordered) < len(a.rows) {
+		clear(a.rows[len(ordered):])
+	}
+	a.rows = a.rows[:0]
 	a.selectedRow = -1
 	for _, index := range ordered {
 		entry := &a.browserEntries[index]
@@ -111,30 +117,55 @@ func (a *appState) rebuild() {
 	}
 }
 
-func (a *appState) recount() {
-	a.scopeCounts = make(map[string]map[string]struct{})
-	for _, face := range a.faces {
-		a.addCount(face)
+type scopeCounter struct {
+	totals      map[string]int
+	names       map[string]map[string]struct{}
+	directories map[string][]string
+}
+
+func newScopeCounter() *scopeCounter {
+	return &scopeCounter{
+		totals:      make(map[string]int),
+		names:       make(map[string]map[string]struct{}),
+		directories: make(map[string][]string),
 	}
 }
 
-func (a *appState) addCount(face fonts.Entry) {
+func (a *appState) recount() {
+	counter := newScopeCounter()
+	for _, face := range a.faces {
+		counter.add(face, a.systemIDs[face.ID()], a.sources)
+	}
+	a.scopeCounts = counter.totals
+}
+
+func (counter *scopeCounter) add(face fonts.Entry, system bool, sources []string) {
 	key := fontNameKey(face)
-	a.addScopeCount("all", key)
-	if a.systemIDs[face.ID()] {
-		a.addScopeCount("system", key)
+	counter.addName("all", key)
+	if system {
+		counter.addName("system", key)
 	}
-	for _, root := range a.sources {
-		if within(root, face.Path) {
-			a.addScopeCount("custom", key)
-			break
+	directory := filepath.Dir(face.Path)
+	scopes, known := counter.directories[directory]
+	if !known {
+		for _, root := range sources {
+			if within(root, directory) {
+				scopes = append(scopes, "custom")
+				break
+			}
 		}
+		for current := directory; ; {
+			scopes = append(scopes, current)
+			parent := filepath.Dir(current)
+			if parent == current {
+				break
+			}
+			current = parent
+		}
+		counter.directories[directory] = scopes
 	}
-	for directory := filepath.Dir(face.Path); ; directory = filepath.Dir(directory) {
-		a.addScopeCount(directory, key)
-		if parent := filepath.Dir(directory); parent == directory {
-			break
-		}
+	for _, scope := range scopes {
+		counter.addName(scope, key)
 	}
 }
 
@@ -145,15 +176,18 @@ func fontNameKey(face fonts.Entry) string {
 	return face.ID()
 }
 
-func (a *appState) addScopeCount(scope, key string) {
-	if a.scopeCounts[scope] == nil {
-		a.scopeCounts[scope] = make(map[string]struct{})
+func (counter *scopeCounter) addName(scope, key string) {
+	names := counter.names[scope]
+	if names == nil {
+		names = make(map[string]struct{})
+		counter.names[scope] = names
 	}
-	a.scopeCounts[scope][key] = struct{}{}
+	names[key] = struct{}{}
+	counter.totals[scope] = len(names)
 }
 
 func (a *appState) count(scope string) int {
-	return len(a.scopeCounts[scope])
+	return a.scopeCounts[scope]
 }
 
 func (a *appState) browser(c *ui.Context, width float32) {
@@ -179,21 +213,43 @@ func (a *appState) browser(c *ui.Context, width float32) {
 			if ui.Button(c, fmt.Sprintf("对比 (%d)", len(a.compareIDs))).Clicked() && len(a.compareIDs) >= 2 {
 				a.comparePage = true
 			}
-			formats := []string{"", "TTF", "OTF", "TTC", "OTC", "WOFF", "WOFF2"}
 			filterLabel := "全部格式"
 			if a.format != "" {
 				filterLabel = a.format
 			}
-			if ui.Button(c, filterLabel).Clicked() {
-				index := slices.Index(formats, a.format)
-				a.format = formats[(index+1)%len(formats)]
-				a.rebuild()
-			}
+			ui.MenuButton(c, filterLabel, func(menu *ui.Menu) {
+				for _, format := range []string{"", "TTF", "OTF", "TTC", "OTC", "WOFF", "WOFF2"} {
+					label := format
+					if label == "" {
+						label = "全部格式"
+					}
+					if menu.Item(label).Checked(a.format == format).Chosen() && a.format != format {
+						a.format = format
+						a.rebuild()
+						a.table.ScrollTo(0, ui.Start)
+					}
+				}
+			})
 		})
 		if a.compareLimit {
 			ui.Text(c, "最多选择 4 款字体进行对比").TextColor(c.Theme().TextMuted)
 		}
 		a.previewToolbar(c)
+		if len(a.rows) == 0 && (a.query != "" || a.format != "") {
+			ui.Column(c).Grow(1).Gap(8).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+				message := "没有匹配的字体"
+				if a.scanning {
+					message = "正在扫描，暂未找到匹配的字体"
+				}
+				ui.Text(c, message).TextColor(c.Theme().TextMuted)
+				if ui.Button(c, "清除筛选").Clicked() {
+					a.query, a.format = "", ""
+					a.rebuild()
+					a.table.ScrollTo(0, ui.Start)
+				}
+			})
+			return
+		}
 		a.table.Selected = &a.selectedRow
 		a.table.Sort = &a.tableSort
 		a.table.Key = func(row int) any { return a.rows[row].ID() }

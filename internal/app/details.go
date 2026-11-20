@@ -50,9 +50,7 @@ func (a *appState) releaseDetails() {
 	a.detailFace = nil
 	a.detailPending = nil
 	a.coverageCache, a.coverageLoading = nil, nil
-	a.rawLoading.finish()
-	a.rawFace, a.rawData = fonts.Entry{}, nil
-	a.rawViewOpen = false
+	a.closeRawTable()
 }
 
 func (a *appState) ensureDetails(entry fonts.Entry) *fonts.Face {
@@ -69,9 +67,7 @@ func (a *appState) ensureDetails(entry fonts.Entry) *fonts.Face {
 	a.detailLoading.finish()
 	a.detailLoading = newLoadingHint(a.window)
 	a.detailError = ""
-	a.rawLoading.finish()
-	a.rawFace, a.rawData = fonts.Entry{}, nil
-	a.rawViewOpen = false
+	a.closeRawTable()
 	a.detailKey = key
 	generation := a.detailGeneration
 	ctx, cancel := context.WithCancel(context.Background())
@@ -127,14 +123,10 @@ func (a *appState) commitDetails() {
 	a.coverageLoading = nil
 }
 
-func (a *appState) details(c *ui.Context) {
-	panel := ui.Column(c).Fill().Padding(16).Gap(12)
-	width := panel.LayoutBounds().W - 32
-	if width <= 0 {
-		width = defaultDetailWidth - 32
-	}
-	previewWidth := int(width)
-	panel.Children(func() {
+func (a *appState) details(c *ui.Context, width float32) {
+	const padding = 16
+	previewWidth := max(1, int(width-2*padding))
+	ui.Column(c).Fill().Padding(padding).Gap(12).Children(func() {
 		if a.selectedRow < 0 || a.selectedRow >= len(a.rows) {
 			a.releaseDetails()
 			ui.Text(c, "字体详细信息").FontSize(18).Bold()
@@ -148,7 +140,7 @@ func (a *appState) details(c *ui.Context) {
 			_, coverageReady := a.coverageCache[a.coverageCacheKey(pending.face.Entry)]
 			key := a.syncPreview(c, pending.face.Entry, a.previewText, a.previewSize, previewWidth, 0)
 			// Publish details, preview and coverage together, including render errors.
-			if (coverageReady || !pending.face.HasUnicodeCmap()) && (a.previewBitmaps[key] != nil || a.previewErrors[key] != "") {
+			if (coverageReady || !pending.face.HasUnicodeCmap()) && (a.previewCache(key).bitmap(key) != nil || a.previewErrors[key] != "") {
 				a.commitDetails()
 				face = a.detailFace
 			}
@@ -169,147 +161,174 @@ func (a *appState) details(c *ui.Context) {
 		if a.detailLoading == nil {
 			a.ensureCoverage(*face)
 		}
-		ui.Scroll(c).Grow(1).Gap(12).Disabled(a.detailLoading != nil).DimDisabled(false).Children(func() {
-			ui.Text(c, face.FullName).FontSize(24).Bold()
+		result, ready := a.cachedCoverage(face.Entry)
+		rows := result.Charsets
+		if a.coverageMode == 1 {
+			rows = result.Blocks
+		}
+		rows = filterCoverage(rows, a.coverageQuery)
+		a.detailList.Key = func(index int) any {
+			if index == len(rows)+1 {
+				return -1
+			}
+			return index
+		}
+		ui.List(c, &a.detailList, len(rows)+2, func(index int) {
+			switch index {
+			case 0:
+				a.detailSummary(c, face, previewWidth, ready)
+			case len(rows) + 1:
+				a.detailMetadata(c, face)
+			default:
+				coverageRow(c, rows[index-1])
+			}
+		}).Grow(1).Gap(12).Disabled(a.detailLoading != nil).DimDisabled(false)
+	})
+}
+
+func (a *appState) detailSummary(c *ui.Context, face *fonts.Face, previewWidth int, coverageReady bool) {
+	ui.Column(c).Gap(12).Children(func() {
+		ui.Text(c, face.FullName).FontSize(24).Bold()
+		ui.Textf(c, "Family Name: %s", face.Family)
+		ui.Column(c).Children(func() {
+			a.syncPreview(c, face.Entry, a.previewText, a.previewSize, previewWidth, 0)
+			a.previewView(c, face.Entry, a.previewSize, previewWidth, 0)
+		})
+		format := face.Format
+		if face.Subfamily != "" {
+			format = face.Subfamily + " · " + format
+		}
+		ui.Textf(c, "%s · 面 %d / %d", format, face.Index+1, face.Count)
+		ui.Textf(c, "字形数: %d · Unicode 映射码位: %d", face.Glyphs, face.Characters.Count())
+		ui.Collapsible(c, "文件信息", &a.fileInfoOpen, func() {
 			ui.Text(c, face.Path)
-			ui.Textf(c, "面 %d / %d · %s", face.Index+1, face.Count, face.Format)
 			ui.Textf(c, "文件大小 %d bytes · 文件修改 %s", face.Size, time.Unix(0, face.Modified).Local().Format("2006-01-02 15:04:05"))
-			ui.Divider(c)
-			ui.Textf(c, "Family Name: %s", face.Family)
-			ui.Textf(c, "Subfamily: %s", face.Subfamily)
 			ui.Textf(c, "PostScript: %s", face.PostScript)
-			ui.Textf(c, "字形数: %d · Unicode 映射码位: %d", face.Glyphs, face.Characters.Count())
 			ui.Textf(c, "采用 cmap: %s", face.Cmap)
-			ui.Divider(c)
-			ui.Column(c).Children(func() {
-				a.syncPreview(c, face.Entry, a.previewText, a.previewSize, previewWidth, 0)
-				a.previewView(c, face.Entry, a.previewSize, previewWidth, 0)
-			})
-			ui.Divider(c)
-			if len(face.Axes) > 0 {
-				ui.Text(c, "可变字体轴").Bold()
-				if len(face.Instances) > 0 {
-					if a.selectedInstance == nil {
-						a.selectedInstance = make(map[string]string)
-					}
-					selected := a.selectedInstance[face.ID()]
-					if selected == "" {
-						selected = "选择命名实例"
-					}
-					names := make([]string, 0, len(face.Instances))
+		})
+		ui.Divider(c)
+		if len(face.Axes) > 0 {
+			ui.Text(c, "可变字体轴").Bold()
+			if len(face.Instances) > 0 {
+				if a.selectedInstance == nil {
+					a.selectedInstance = make(map[string]string)
+				}
+				selected := a.selectedInstance[face.ID()]
+				if selected == "" {
+					selected = "选择命名实例"
+				}
+				names := make([]string, 0, len(face.Instances))
+				for _, instance := range face.Instances {
+					names = append(names, instance.Name)
+				}
+				if ui.Select(c, &selected, names).Changed() {
+					a.selectedInstance[face.ID()] = selected
 					for _, instance := range face.Instances {
-						names = append(names, instance.Name)
-					}
-					if ui.Select(c, &selected, names).Changed() {
-						a.selectedInstance[face.ID()] = selected
-						for _, instance := range face.Instances {
-							if instance.Name == selected {
-								for tag, value := range instance.Coordinates {
-									a.axisValues[face.ID()][tag] = float64(value)
-								}
-								break
+						if instance.Name == selected {
+							for tag, value := range instance.Coordinates {
+								a.axisValues[face.ID()][tag] = float64(value)
 							}
+							break
 						}
 					}
 				}
+			}
+			for _, axis := range face.Axes {
+				name := axis.Name
+				if name == "" {
+					name = axis.Tag
+				}
+				ui.Textf(c, "%s (%s) · %.1f–%.1f", name, axis.Tag, axis.Minimum, axis.Maximum)
+				value := a.axisValues[face.ID()][axis.Tag]
+				ui.Row(c).Gap(8).Children(func() {
+					if ui.Slider(c, &value, float64(axis.Minimum), float64(axis.Maximum)).Grow(1).Changed() {
+						a.axisValues[face.ID()][axis.Tag] = value
+						a.selectedInstance[face.ID()] = ""
+					}
+					if ui.NumberInput(c, &value, float64(axis.Minimum), float64(axis.Maximum), 1).Width(90).Changed() {
+						a.axisValues[face.ID()][axis.Tag] = value
+						a.selectedInstance[face.ID()] = ""
+					}
+				})
+			}
+			if ui.Button(c, "恢复默认轴值").Clicked() {
 				for _, axis := range face.Axes {
-					name := axis.Name
-					if name == "" {
-						name = axis.Tag
-					}
-					ui.Textf(c, "%s (%s) · %.1f–%.1f", name, axis.Tag, axis.Minimum, axis.Maximum)
-					value := a.axisValues[face.ID()][axis.Tag]
-					ui.Row(c).Gap(8).Children(func() {
-						if ui.Slider(c, &value, float64(axis.Minimum), float64(axis.Maximum)).Grow(1).Changed() {
-							a.axisValues[face.ID()][axis.Tag] = value
-							a.selectedInstance[face.ID()] = ""
-						}
-						if ui.NumberInput(c, &value, float64(axis.Minimum), float64(axis.Maximum), 1).Width(90).Changed() {
-							a.axisValues[face.ID()][axis.Tag] = value
-							a.selectedInstance[face.ID()] = ""
-						}
-					})
+					a.axisValues[face.ID()][axis.Tag] = float64(axis.Default)
 				}
-				if ui.Button(c, "恢复默认轴值").Clicked() {
-					for _, axis := range face.Axes {
-						a.axisValues[face.ID()][axis.Tag] = float64(axis.Default)
-					}
-					a.selectedInstance[face.ID()] = ""
-				}
-				ui.Divider(c)
-			}
-			ui.Row(c).Gap(8).Children(func() {
-				ui.Text(c, "字符集覆盖").Bold().Grow(1)
-				if a.coverageLoading[a.coverageCacheKey(face.Entry)].show() {
-					ui.Text(c, "更新中…").TextColor(c.Theme().TextMuted)
-				}
-				if ui.Button(c, "字符集支持").Clicked() {
-					a.coveragePage = true
-				}
-			})
-			if !face.HasUnicodeCmap() {
-				ui.Text(c, "没有可用的 Unicode cmap").TextColor(c.Theme().TextMuted)
-			} else if result, ready := a.cachedCoverage(face.Entry); ready {
-				labels := []string{"字表", "Unicode 区块"}
-				if ui.Button(c, labels[a.coverageMode]).Clicked() {
-					a.coverageMode = (a.coverageMode + 1) % 2
-				}
-				ui.SearchField(c, &a.coverageQuery).Placeholder("搜索统计项")
-				rows := result.Charsets
-				if a.coverageMode == 1 {
-					rows = result.Blocks
-				}
-				for _, row := range rows {
-					if strings.Contains(strings.ToLower(row.Name), strings.ToLower(a.coverageQuery)) {
-						coverageRow(c, row)
-					}
-				}
-			} else if a.coverageLoading[a.coverageCacheKey(face.Entry)].show() {
-				ui.Text(c, "正在计算覆盖统计…")
+				a.selectedInstance[face.ID()] = ""
 			}
 			ui.Divider(c)
-			ui.SearchField(c, &a.detailsQuery).Placeholder("搜索名称记录、属性或表")
-			ui.Text(c, "字体属性").Bold()
-			group := ""
-			for _, property := range face.Properties {
-				line := fmt.Sprintf("%s: %s", property.Name, property.Value)
-				if !a.detailsMatch(property.Group + " " + line) {
-					continue
-				}
-				if property.Group != group {
-					group = property.Group
-					ui.Text(c, group).Bold()
-				}
-				ui.Text(c, line)
+		}
+		ui.Row(c).Gap(8).Children(func() {
+			ui.Text(c, "字符集覆盖").Bold().Grow(1)
+			if a.coverageLoading[a.coverageCacheKey(face.Entry)].show() {
+				ui.Text(c, "更新中…").TextColor(c.Theme().TextMuted)
 			}
-			ui.Divider(c)
-			ui.Text(c, "名称记录").Bold()
-			for _, name := range face.Names {
-				language := fmt.Sprintf("%04X", name.Language)
-				if name.LanguageTag != "" {
-					language += " " + name.LanguageTag
-				}
-				value := name.Value
-				if value == "" {
-					value = "（空字符串）"
-				}
-				line := fmt.Sprintf("ID %d · %d/%d/%s: %s", name.ID, name.Platform, name.Encoding, language, value)
-				if a.detailsMatch(line) {
-					ui.Text(c, line)
-				}
-			}
-			ui.Divider(c)
-			ui.Text(c, "表目录").Bold()
-			offsetLabel := "文件偏移"
-			if face.Format == "WOFF" || face.Format == "WOFF2" {
-				offsetLabel = "解包后偏移"
-			}
-			for _, table := range face.Tables {
-				label := fmt.Sprintf("%s · %d bytes · %s 0x%X · 目录 checksum 0x%08X", table.Tag, table.Size, offsetLabel, table.Offset, table.Checksum)
-				if a.detailsMatch(label) && ui.Button(c, label).Clicked() {
-					a.openRawTable(face.Entry, table.Tag)
-				}
+			if ui.Button(c, "字符集支持").Clicked() {
+				a.coveragePage = true
 			}
 		})
+		if !face.HasUnicodeCmap() {
+			ui.Text(c, "没有可用的 Unicode cmap").TextColor(c.Theme().TextMuted)
+		} else if coverageReady {
+			labels := []string{"字表", "Unicode 区块"}
+			if ui.Button(c, labels[a.coverageMode]).Clicked() {
+				a.coverageMode = (a.coverageMode + 1) % 2
+				c.AnimationFrame()
+			}
+			if ui.SearchField(c, &a.coverageQuery).Placeholder("搜索统计项").Changed() {
+				c.AnimationFrame()
+			}
+		} else if a.coverageLoading[a.coverageCacheKey(face.Entry)].show() {
+			ui.Text(c, "正在计算覆盖统计…")
+		}
+	})
+}
+
+func (a *appState) detailMetadata(c *ui.Context, face *fonts.Face) {
+	ui.Column(c).Gap(12).Children(func() {
+		ui.Divider(c)
+		ui.SearchField(c, &a.detailsQuery).Placeholder("搜索名称记录、属性或表")
+		ui.Text(c, "字体属性").Bold()
+		group := ""
+		for _, property := range face.Properties {
+			line := fmt.Sprintf("%s: %s", property.Name, property.Value)
+			if !a.detailsMatch(property.Group + " " + line) {
+				continue
+			}
+			if property.Group != group {
+				group = property.Group
+				ui.Text(c, group).Bold()
+			}
+			ui.Text(c, line)
+		}
+		ui.Divider(c)
+		ui.Text(c, "名称记录").Bold()
+		for _, name := range face.Names {
+			language := fmt.Sprintf("%04X", name.Language)
+			if name.LanguageTag != "" {
+				language += " " + name.LanguageTag
+			}
+			value := name.Value
+			if value == "" {
+				value = "（空字符串）"
+			}
+			line := fmt.Sprintf("ID %d · %d/%d/%s: %s", name.ID, name.Platform, name.Encoding, language, value)
+			if a.detailsMatch(line) {
+				ui.Text(c, line)
+			}
+		}
+		ui.Divider(c)
+		ui.Text(c, "表目录").Bold()
+		offsetLabel := "文件偏移"
+		if face.Format == "WOFF" || face.Format == "WOFF2" {
+			offsetLabel = "解包后偏移"
+		}
+		for _, table := range face.Tables {
+			label := fmt.Sprintf("%s · %d bytes · %s 0x%X · 目录 checksum 0x%08X", table.Tag, table.Size, offsetLabel, table.Offset, table.Checksum)
+			if a.detailsMatch(label) && ui.Button(c, label).Clicked() {
+				a.openRawTable(face.Entry, table)
+			}
+		}
 	})
 }

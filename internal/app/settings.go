@@ -24,6 +24,7 @@ type settings struct {
 	TableWidths       map[string]float32    `json:"tableWidths,omitempty"`
 	PreviewPreset     string                `json:"previewPreset"`
 	CustomPreviewText string                `json:"customPreviewText"`
+	PreviewOverrides  map[string]string     `json:"previewOverrides,omitempty"`
 }
 
 func settingsPath() string {
@@ -65,6 +66,7 @@ func (a *appState) loadSettings() {
 		}
 		a.charsets = saved.Charsets
 		a.charsetRevision = saved.CharsetRevision
+		a.previewOverrides = saved.PreviewOverrides
 		if saved.PreviewPreset != "" {
 			a.customPreviewText = saved.CustomPreviewText
 			a.selectPreviewPreset(saved.PreviewPreset)
@@ -116,7 +118,7 @@ func (a *appState) saveSettings() {
 		LeftWidth: a.leftWidth, CenterWidth: a.centerWidth,
 		CoverageSplit: a.coverageSplit,
 		TableWidths:   a.table.Columns.Widths,
-		PreviewPreset: a.previewPreset, CustomPreviewText: a.customPreviewText,
+		PreviewPreset: a.previewPreset, CustomPreviewText: a.customPreviewText, PreviewOverrides: a.previewOverrides,
 	}, "", "  ")
 	if err == nil {
 		_ = os.WriteFile(path, data, 0600)
