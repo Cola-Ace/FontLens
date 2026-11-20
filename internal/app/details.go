@@ -50,9 +50,7 @@ func (a *appState) releaseDetails() {
 	a.detailFace = nil
 	a.detailPending = nil
 	a.coverageCache, a.coverageLoading = nil, nil
-	a.rawLoading.finish()
-	a.rawFace, a.rawData = fonts.Entry{}, nil
-	a.rawViewOpen = false
+	a.closeRawTable()
 }
 
 func (a *appState) ensureDetails(entry fonts.Entry) *fonts.Face {
@@ -69,9 +67,7 @@ func (a *appState) ensureDetails(entry fonts.Entry) *fonts.Face {
 	a.detailLoading.finish()
 	a.detailLoading = newLoadingHint(a.window)
 	a.detailError = ""
-	a.rawLoading.finish()
-	a.rawFace, a.rawData = fonts.Entry{}, nil
-	a.rawViewOpen = false
+	a.closeRawTable()
 	a.detailKey = key
 	generation := a.detailGeneration
 	ctx, cancel := context.WithCancel(context.Background())
@@ -303,7 +299,7 @@ func (a *appState) details(c *ui.Context, width float32) {
 			for _, table := range face.Tables {
 				label := fmt.Sprintf("%s · %d bytes · %s 0x%X · 目录 checksum 0x%08X", table.Tag, table.Size, offsetLabel, table.Offset, table.Checksum)
 				if a.detailsMatch(label) && ui.Button(c, label).Clicked() {
-					a.openRawTable(face.Entry, table.Tag)
+					a.openRawTable(face.Entry, table)
 				}
 			}
 		})

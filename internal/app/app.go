@@ -86,7 +86,8 @@ type appState struct {
 	compareLimit      bool
 	rawViewOpen       bool
 	rawFace           fonts.Entry
-	rawTag            string
+	rawTable          fonts.Table
+	rawPages          *fonts.TablePages
 	rawData           []byte
 	rawError          string
 	rawLoading        *loadingHint

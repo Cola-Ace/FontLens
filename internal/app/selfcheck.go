@@ -362,7 +362,7 @@ func checkFont(path, sample string) error {
 	}
 	for _, face := range faces {
 		for _, table := range face.Tables {
-			if table.Tag != "head" {
+			if table.Tag != "head" && table.Tag != "cmap" {
 				continue
 			}
 			end := uint64(table.Offset) + uint64(table.Size)
@@ -371,9 +371,19 @@ func checkFont(path, sample string) error {
 			}
 			raw, readErr := fonts.ReadRawTable(path, face.Index, table.Tag)
 			if readErr != nil || !bytes.Equal(raw, container[table.Offset:end]) {
-				return fmt.Errorf("face %d head directory offset mismatch: %v", face.Index, readErr)
+				return fmt.Errorf("face %d %s directory offset mismatch: %v", face.Index, table.Tag, readErr)
 			}
-			break
+			pages, err := fonts.OpenTablePages(face.Entry, table)
+			if err != nil {
+				return err
+			}
+			for _, page := range []int{0, max(0, len(raw)-1) / fonts.TablePageSize} {
+				data, err := pages.ReadPage(page)
+				start := page * fonts.TablePageSize
+				if err != nil || !bytes.Equal(data, raw[start:min(start+fonts.TablePageSize, len(raw))]) {
+					return fmt.Errorf("face %d %s page %d mismatch: %v", face.Index, table.Tag, page, err)
+				}
+			}
 		}
 	}
 	for _, table := range faces[0].Tables {
