@@ -189,19 +189,22 @@ func (a *appState) details(c *ui.Context, width float32) {
 func (a *appState) detailSummary(c *ui.Context, face *fonts.Face, previewWidth int, coverageReady bool) {
 	ui.Column(c).Gap(12).Children(func() {
 		ui.Text(c, face.FullName).FontSize(24).Bold()
-		ui.Text(c, face.Path)
-		ui.Textf(c, "面 %d / %d · %s", face.Index+1, face.Count, face.Format)
-		ui.Textf(c, "文件大小 %d bytes · 文件修改 %s", face.Size, time.Unix(0, face.Modified).Local().Format("2006-01-02 15:04:05"))
-		ui.Divider(c)
-		ui.Textf(c, "Family Name: %s", face.Family)
-		ui.Textf(c, "Subfamily: %s", face.Subfamily)
-		ui.Textf(c, "PostScript: %s", face.PostScript)
-		ui.Textf(c, "字形数: %d · Unicode 映射码位: %d", face.Glyphs, face.Characters.Count())
-		ui.Textf(c, "采用 cmap: %s", face.Cmap)
-		ui.Divider(c)
 		ui.Column(c).Children(func() {
 			a.syncPreview(c, face.Entry, a.previewText, a.previewSize, previewWidth, 0)
 			a.previewView(c, face.Entry, a.previewSize, previewWidth, 0)
+		})
+		format := face.Format
+		if face.Subfamily != "" {
+			format = face.Subfamily + " · " + format
+		}
+		ui.Textf(c, "%s · 面 %d / %d", format, face.Index+1, face.Count)
+		ui.Textf(c, "字形数: %d · Unicode 映射码位: %d", face.Glyphs, face.Characters.Count())
+		ui.Collapsible(c, "文件信息", &a.fileInfoOpen, func() {
+			ui.Text(c, face.Path)
+			ui.Textf(c, "文件大小 %d bytes · 文件修改 %s", face.Size, time.Unix(0, face.Modified).Local().Format("2006-01-02 15:04:05"))
+			ui.Textf(c, "Family Name: %s", face.Family)
+			ui.Textf(c, "PostScript: %s", face.PostScript)
+			ui.Textf(c, "采用 cmap: %s", face.Cmap)
 		})
 		ui.Divider(c)
 		if len(face.Axes) > 0 {

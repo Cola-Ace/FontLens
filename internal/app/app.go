@@ -24,6 +24,7 @@ type appState struct {
 	treeRow           int
 	table             ui.ListState
 	detailList        ui.ListState
+	fileInfoOpen      bool
 	selectedRow       int
 	selectedID        string
 	detailFace        *fonts.Face
