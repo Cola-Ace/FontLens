@@ -28,7 +28,7 @@ func (a *appState) treeChildren(node string) []string {
 }
 
 func (a *appState) sidebar(c *ui.Context) {
-	ui.Column(c).Fill().Padding(8, 12).Gap(12).Children(func() {
+	ui.Column(c).Fill().Padding(8, 12, 8, 4).Gap(12).Children(func() {
 		ui.Text(c, "字体目录").TextColor(c.Theme().TextMuted)
 		for row := 0; row < a.tree.Rows(); row++ {
 			if a.tree.Item(row) == a.scope {
@@ -53,6 +53,7 @@ func (a *appState) sidebar(c *ui.Context) {
 				})
 			}
 		}
+		trackWidth := ui.ScrollbarStyle{}.Resolve(c.Theme()).TrackWidth
 		if ui.Outline(c, &a.tree, []string{"all"}, a.treeChildren, func(node string) {
 			label := node
 			icon := ""
@@ -73,7 +74,7 @@ func (a *appState) sidebar(c *ui.Context) {
 					rowHeight = 42
 				}
 			}
-			row := ui.Row(c).Grow(1).MinWidth(0).Height(rowHeight).Padding(0, 6, 0, 0).Gap(4).AlignItems(ui.Center).Children(func() {
+			row := ui.Row(c).Grow(1).MinWidth(0).Height(rowHeight).PaddingEnd(6).Gap(4).AlignItems(ui.Center).Children(func() {
 				if icon != "" {
 					ui.Text(c, icon).Font("Segoe MDL2 Assets").FontSize(13).Width(16).Shrink(0)
 				} else {
@@ -141,7 +142,7 @@ func (a *appState) sidebar(c *ui.Context) {
 					}
 				})
 			}
-		}).Grow(1).Changed() {
+		}).Grow(1).PaddingEnd(trackWidth).Changed() {
 			a.scope = a.tree.Item(a.treeRow)
 			a.rebuild()
 			a.pruneFamilyPreviews()
