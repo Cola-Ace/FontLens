@@ -235,6 +235,21 @@ func (a *appState) browser(c *ui.Context, width float32) {
 			ui.Text(c, "最多选择 4 款字体进行对比").TextColor(c.Theme().TextMuted)
 		}
 		a.previewToolbar(c)
+		if len(a.rows) == 0 && (a.query != "" || a.format != "") {
+			ui.Column(c).Grow(1).Gap(8).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+				message := "没有匹配的字体"
+				if a.scanning {
+					message = "正在扫描，暂未找到匹配的字体"
+				}
+				ui.Text(c, message).TextColor(c.Theme().TextMuted)
+				if ui.Button(c, "清除筛选").Clicked() {
+					a.query, a.format = "", ""
+					a.rebuild()
+					a.table.ScrollTo(0, ui.Start)
+				}
+			})
+			return
+		}
 		a.table.Selected = &a.selectedRow
 		a.table.Sort = &a.tableSort
 		a.table.Key = func(row int) any { return a.rows[row].ID() }
