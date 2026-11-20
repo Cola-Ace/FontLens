@@ -23,6 +23,7 @@ type appState struct {
 	tree              ui.OutlineState[string]
 	treeRow           int
 	table             ui.ListState
+	detailList        ui.ListState
 	selectedRow       int
 	selectedID        string
 	detailFace        *fonts.Face

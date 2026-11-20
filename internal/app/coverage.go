@@ -161,13 +161,22 @@ func (a *appState) coverageView(c *ui.Context) {
 	})
 }
 
-func (a *appState) coverageList(c *ui.Context, title string, rows []coverage.Row) {
+func filterCoverage(rows []coverage.Row, query string) []coverage.Row {
+	if query == "" {
+		return rows
+	}
+	query = strings.ToLower(query)
 	filtered := make([]coverage.Row, 0, len(rows))
 	for _, row := range rows {
-		if strings.Contains(strings.ToLower(row.Name), strings.ToLower(a.coverageQuery)) {
+		if strings.Contains(strings.ToLower(row.Name), query) {
 			filtered = append(filtered, row)
 		}
 	}
+	return filtered
+}
+
+func (a *appState) coverageList(c *ui.Context, title string, rows []coverage.Row) {
+	filtered := filterCoverage(rows, a.coverageQuery)
 	ui.Column(c).Fill().Padding(8).Gap(8).Children(func() {
 		ui.Textf(c, "%s (%d)", title, len(filtered)).Bold()
 		ui.List(c, nil, len(filtered), func(index int) { coverageRow(c, filtered[index]) }).Grow(1)
