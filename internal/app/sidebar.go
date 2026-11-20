@@ -29,7 +29,12 @@ func (a *appState) treeChildren(node string) []string {
 
 func (a *appState) sidebar(c *ui.Context) {
 	ui.Column(c).Fill().Padding(8, 12, 8, 4).Gap(12).Children(func() {
-		ui.Text(c, "字体目录").TextColor(c.Theme().TextMuted)
+		ui.Row(c).AlignItems(ui.Center).Gap(4).Children(func() {
+			ui.Text(c, "字体目录").TextColor(c.Theme().TextMuted).Grow(1)
+			if ui.Button(c, "添加文件夹").Clicked() {
+				a.chooseFolder()
+			}
+		})
 		for row := 0; row < a.tree.Rows(); row++ {
 			if a.tree.Item(row) == a.scope {
 				a.treeRow = row
