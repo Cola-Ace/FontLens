@@ -189,6 +189,7 @@ func (a *appState) details(c *ui.Context, width float32) {
 func (a *appState) detailSummary(c *ui.Context, face *fonts.Face, previewWidth int, coverageReady bool) {
 	ui.Column(c).Gap(12).Children(func() {
 		ui.Text(c, face.FullName).FontSize(24).Bold()
+		ui.Textf(c, "Family Name: %s", face.Family)
 		ui.Column(c).Children(func() {
 			a.syncPreview(c, face.Entry, a.previewText, a.previewSize, previewWidth, 0)
 			a.previewView(c, face.Entry, a.previewSize, previewWidth, 0)
@@ -202,7 +203,6 @@ func (a *appState) detailSummary(c *ui.Context, face *fonts.Face, previewWidth i
 		ui.Collapsible(c, "文件信息", &a.fileInfoOpen, func() {
 			ui.Text(c, face.Path)
 			ui.Textf(c, "文件大小 %d bytes · 文件修改 %s", face.Size, time.Unix(0, face.Modified).Local().Format("2006-01-02 15:04:05"))
-			ui.Textf(c, "Family Name: %s", face.Family)
 			ui.Textf(c, "PostScript: %s", face.PostScript)
 			ui.Textf(c, "采用 cmap: %s", face.Cmap)
 		})
