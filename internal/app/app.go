@@ -53,7 +53,7 @@ type appState struct {
 	browserEntries    []browserEntry
 	faceIndex         map[string]int
 	systemIDs         map[string]bool
-	scopeCounts       map[string]map[string]struct{}
+	scopeCounts       map[string]int
 	rows              []fonts.Entry
 	dirs              map[string][]string
 	errors            []string

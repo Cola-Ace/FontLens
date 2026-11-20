@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -130,7 +131,7 @@ func (a *appState) refresh() {
 	a.dirs = make(map[string][]string)
 	a.errors = nil
 	a.systemIDs = make(map[string]bool)
-	a.recount()
+	counts := a.recount()
 	roots := slices.Clone(a.sources)
 	go func() {
 		reader := scanReader{store: a.store}
@@ -138,9 +139,10 @@ func (a *appState) refresh() {
 			reader.cache, _ = a.store.LoadFaces(ctx)
 		}
 		seen := make(map[string]struct{})
-		directoryScopes := make(map[string][]string)
+		recountNeeded := false
 		type scanFace struct {
 			face   fonts.Entry
+			id     string
 			system bool
 		}
 		batch := make([]scanFace, 0, 512)
@@ -159,19 +161,24 @@ func (a *appState) refresh() {
 					return
 				}
 				for _, item := range ready {
-					face := item.face
-					if item.system && !a.systemIDs[face.ID()] {
-						a.systemIDs[face.ID()] = true
-						if _, exists := a.faceIndex[face.ID()]; exists {
-							a.addScopeCount("system", fontNameKey(face))
+					face, id := item.face, item.id
+					index, exists := a.faceIndex[id]
+					if item.system {
+						a.systemIDs[id] = true
+						if exists {
+							counts.addName("system", fontNameKey(face))
 						}
 					}
-					if index, exists := a.faceIndex[face.ID()]; exists {
+					if exists {
+						previous := a.faces[index]
+						if previous.FullName != face.FullName || previous.Path != face.Path {
+							recountNeeded = true
+						}
 						a.faces[index] = face
 					} else {
-						a.faceIndex[face.ID()] = len(a.faces)
+						a.faceIndex[id] = len(a.faces)
 						a.faces = append(a.faces, face)
-						a.addCount(face, directoryScopes)
+						counts.add(face, item.system, roots)
 					}
 				}
 				for _, path := range dirs {
@@ -206,7 +213,7 @@ func (a *appState) refresh() {
 				return
 			}
 			seen[id] = struct{}{}
-			batch = append(batch, scanFace{face: face, system: system})
+			batch = append(batch, scanFace{face: face, id: id, system: system})
 			flushIfReady()
 		}
 		report := func(message string) {
@@ -266,7 +273,7 @@ func (a *appState) refresh() {
 		reader.flush()
 		a.window.Update(func() {
 			if current == a.scanID {
-				if ctx.Err() == nil {
+				if ctx.Err() == nil && len(seen) != len(a.faces) {
 					a.faces = slices.DeleteFunc(a.faces, func(face fonts.Entry) bool {
 						_, exists := seen[face.ID()]
 						return !exists
@@ -275,6 +282,9 @@ func (a *appState) refresh() {
 					for index, face := range a.faces {
 						a.faceIndex[face.ID()] = index
 					}
+					recountNeeded = true
+				}
+				if ctx.Err() == nil {
 					a.compareIDs = slices.DeleteFunc(a.compareIDs, func(id string) bool {
 						_, exists := a.faceIndex[id]
 						return !exists
@@ -282,12 +292,15 @@ func (a *appState) refresh() {
 					if len(a.compareIDs) < 4 {
 						a.compareLimit = false
 					}
+				}
+				if recountNeeded {
 					a.recount()
 				}
 				a.scanning = false
 				a.cancelScan = nil
 				a.rebuild()
 				a.pruneFamilyPreviews()
+				go debug.FreeOSMemory()
 			}
 		})
 	}()

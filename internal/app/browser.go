@@ -40,13 +40,12 @@ func within(root, path string) bool {
 }
 
 type browserEntry struct {
-	face                fonts.Entry
-	id, name, key, path string
-	order               []byte
+	face          fonts.Entry
+	id, name, key string
+	order         []byte
 }
 
 func (a *appState) rebuild() {
-	a.rows = a.rows[:0]
 	seen := make(map[string]struct{})
 	query := strings.ToLower(a.query)
 	for len(a.browserEntries) < len(a.faces) {
@@ -61,7 +60,7 @@ func (a *appState) rebuild() {
 		entry := &a.browserEntries[i]
 		if entry.face != face || entry.id == "" {
 			name := strings.ToLower(face.FullName)
-			*entry = browserEntry{face: face, id: face.ID(), name: name, key: strings.TrimSpace(name), path: strings.ToLower(face.Path)}
+			*entry = browserEntry{face: face, id: face.ID(), name: name, key: strings.TrimSpace(name)}
 			if entry.key == "" {
 				entry.key = entry.id
 			}
@@ -86,7 +85,7 @@ func (a *appState) rebuild() {
 			left, right := &a.browserEntries[leftIndex], &a.browserEntries[rightIndex]
 			order := bytes.Compare(left.order, right.order)
 			if order == 0 {
-				order = strings.Compare(left.path, right.path)
+				order = strings.Compare(strings.ToLower(left.face.Path), strings.ToLower(right.face.Path))
 			}
 			if order == 0 {
 				order = left.face.Index - right.face.Index
@@ -97,6 +96,10 @@ func (a *appState) rebuild() {
 			return order
 		})
 	}
+	if len(ordered) < len(a.rows) {
+		clear(a.rows[len(ordered):])
+	}
+	a.rows = a.rows[:0]
 	a.selectedRow = -1
 	for _, index := range ordered {
 		entry := &a.browserEntries[index]
@@ -111,24 +114,35 @@ func (a *appState) rebuild() {
 	}
 }
 
-func (a *appState) recount() {
-	a.scopeCounts = make(map[string]map[string]struct{})
-	directoryScopes := make(map[string][]string)
-	for _, face := range a.faces {
-		a.addCount(face, directoryScopes)
-	}
+type scopeCounter struct {
+	totals      map[string]int
+	names       map[string]map[string]struct{}
+	directories map[string][]string
 }
 
-func (a *appState) addCount(face fonts.Entry, directoryScopes map[string][]string) {
+func (a *appState) recount() *scopeCounter {
+	counter := &scopeCounter{
+		totals:      make(map[string]int),
+		names:       make(map[string]map[string]struct{}),
+		directories: make(map[string][]string),
+	}
+	a.scopeCounts = counter.totals
+	for _, face := range a.faces {
+		counter.add(face, a.systemIDs[face.ID()], a.sources)
+	}
+	return counter
+}
+
+func (counter *scopeCounter) add(face fonts.Entry, system bool, sources []string) {
 	key := fontNameKey(face)
-	a.addScopeCount("all", key)
-	if a.systemIDs[face.ID()] {
-		a.addScopeCount("system", key)
+	counter.addName("all", key)
+	if system {
+		counter.addName("system", key)
 	}
 	directory := filepath.Dir(face.Path)
-	scopes, known := directoryScopes[directory]
+	scopes, known := counter.directories[directory]
 	if !known {
-		for _, root := range a.sources {
+		for _, root := range sources {
 			if within(root, directory) {
 				scopes = append(scopes, "custom")
 				break
@@ -142,10 +156,10 @@ func (a *appState) addCount(face fonts.Entry, directoryScopes map[string][]strin
 			}
 			current = parent
 		}
-		directoryScopes[directory] = scopes
+		counter.directories[directory] = scopes
 	}
 	for _, scope := range scopes {
-		a.addScopeCount(scope, key)
+		counter.addName(scope, key)
 	}
 }
 
@@ -156,15 +170,18 @@ func fontNameKey(face fonts.Entry) string {
 	return face.ID()
 }
 
-func (a *appState) addScopeCount(scope, key string) {
-	if a.scopeCounts[scope] == nil {
-		a.scopeCounts[scope] = make(map[string]struct{})
+func (counter *scopeCounter) addName(scope, key string) {
+	names := counter.names[scope]
+	if names == nil {
+		names = make(map[string]struct{})
+		counter.names[scope] = names
 	}
-	a.scopeCounts[scope][key] = struct{}{}
+	names[key] = struct{}{}
+	counter.totals[scope] = len(names)
 }
 
 func (a *appState) count(scope string) int {
-	return len(a.scopeCounts[scope])
+	return a.scopeCounts[scope]
 }
 
 func (a *appState) browser(c *ui.Context, width float32) {
